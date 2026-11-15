@@ -1,0 +1,416 @@
+name: Build Horizon Native Instance
+# [build-native] Rebuild both native targets after CI dependency, report-format, and optional-mod fallback fixes.
+# Push builds are opt-in: use [build-native] in a main-branch commit message.
+# [build-native] Verify the direct instances/<id> drop-in package layout.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build.yml"
+      - "scripts/**"
+      - "input/mods/**"
+  workflow_dispatch:
+    inputs:
+      instance_release_tag:
+        description: "Optional release tag in THIS repository containing the instance ZIP"
+        required: false
+        type: string
+      instance_asset_name:
+        description: "Horizon instance ZIP asset filename"
+        required: true
+        default: "instance.zip"
+        type: string
+      minecraft_version:
+        description: "Official Mojang version ID, latest-release, or latest-snapshot"
+        required: true
+        default: "26.3"
+        type: string
+      minecraft_release_tag:
+        description: "Optional legacy Release tag containing a full Minecraft game-directory ZIP; leave blank to download from Mojang"
+        required: false
+        type: string
+      minecraft_source_repository:
+        description: "Repository hosting the optional prebuilt Minecraft ZIP; use a private repository"
+        required: false
+        default: ""
+        type: string
+      minecraft_asset_name:
+        description: "Minecraft game ZIP asset filename for the optional legacy path"
+        required: true
+        default: "minecraft.zip"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: horizon-native-${{ github.ref }}-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Download instance from this repository's Release (optional)
+        if: ${{ inputs.instance_release_tag != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.instance_release_tag }}
+          ASSET: ${{ inputs.instance_asset_name }}
+        run: |
+          mkdir -p input/instance
+          temp_dir="$(mktemp -d)"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$ASSET" --dir "$temp_dir"
+          cp "$temp_dir/$ASSET" input/instance/instance.zip
+      - name: Normalize uploaded Horizon instance ZIP filename
+        run: |
+          mkdir -p input/instance input/minecraft
+          if [ ! -f input/instance/instance.zip ]; then
+            if [ -f input/instance/horizon.zip ]; then
+              cp input/instance/horizon.zip input/instance/instance.zip
+              echo "Using input/instance/horizon.zip as the Horizon instance archive."
+            else
+              echo "::error::No Horizon instance ZIP found. Upload input/instance/instance.zip or input/instance/horizon.zip, or provide instance_release_tag."
+              ls -la input/instance
+              exit 1
+            fi
+          fi
+      - name: Test archive validation and extraction
+        run: python -m unittest discover -s tests -v
+      - name: Validate Horizon instance and optional native mods
+        run: python scripts/prepare.py
+      - name: Verify real .hnmod bundle extraction layout
+        run: python scripts/extract_native_mods.py input/mods --destination build-report/validated-native-mods
+      - name: Inspect the exact instance and all supplied .hnmod packages (read-only)
+        run: python scripts/inspect_inputs.py --output build-report/input-inspection.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: input-inspection-report
+          path: build-report/input-inspection.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Resolve the current official Horizon Nightly
+        run: python scripts/resolve_horizon_revision.py --output build-report/horizon-commit.txt --report build-report/horizon-nightly.json
+      - name: Download newest registry mods verified on this Nightly
+        run: python scripts/download_registry_mods.py --game 26.3 --horizon-commit "$(cat build-report/horizon-commit.txt)" --output input/mods-latest --report build-report/registry-mods.json
+      - name: Verify selected registry native-mod extraction layout
+        run: python scripts/extract_native_mods.py input/mods-latest --destination build-report/validated-native-mods-latest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: registry-mod-selection
+          path: build-report/registry-mods.json
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        with:
+          name: validated-inputs
+          path: |
+            input/instance/instance.zip
+            input/mods/
+            input/mods-latest/
+            build-report/input-manifest.json
+            build-report/horizon-commit.txt
+            build-report/horizon-nightly.json
+            build-report/registry-mods.json
+            build-report/validated-native-mods-latest/
+          if-no-files-found: error
+          retention-days: 7
+
+  native-build:
+    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[build-native]') }}
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: linux-x86_64
+            client: horizon-client
+          - runner: windows-latest
+            target: windows-x86_64
+            client: horizon-client.exe
+    runs-on: ${{ matrix.runner }}
+    env:
+      HORIZON_LAUNCHER_HOME: ${{ github.workspace }}/.horizon-launcher
+      HORIZON_HOME: ${{ github.workspace }}/.horizon-game
+      CARGO_INCREMENTAL: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: validated-inputs
+          path: .
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux build prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libssl-dev cmake libfontconfig1-dev libxkbcommon-dev libxkbcommon-x11-dev libudev-dev libwayland-dev libx11-dev libvulkan-dev libasound2-dev
+      - name: Checkout the exact Horizon revision resolved by validation
+        shell: bash
+        run: |
+          HORIZON_COMMIT="$(cat build-report/horizon-commit.txt)"
+          if [[ ! "$HORIZON_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Validated Horizon commit is not an immutable full SHA-1."
+            exit 1
+          fi
+          git clone --filter=blob:none --no-checkout https://github.com/horizon-rust/horizon.git horizon-src
+          git -C horizon-src fetch --depth=1 origin "$HORIZON_COMMIT"
+          git -C horizon-src checkout --detach FETCH_HEAD
+          ACTUAL_COMMIT="$(git -C horizon-src rev-parse HEAD)"
+          if [[ "$ACTUAL_COMMIT" != "$HORIZON_COMMIT" ]]; then
+            echo "::error::Horizon revision mismatch: expected $HORIZON_COMMIT, got $ACTUAL_COMMIT"
+            exit 1
+          fi
+          echo "HORIZON_COMMIT=$ACTUAL_COMMIT" >> "$GITHUB_ENV"
+      - name: Restore Rust dependency and build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: horizon-src -> target
+          shared-key: horizon-${{ runner.os }}-${{ env.HORIZON_COMMIT }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Read Minecraft version pinned by Horizon
+        shell: bash
+        run: |
+          EXPECTED_MINECRAFT_VERSION="$(python -c 'import json; print(json.load(open("horizon-src/research-lock.json", encoding="utf-8"))["minecraft"]["version"])')"
+          if [[ -z "$EXPECTED_MINECRAFT_VERSION" ]]; then
+            echo "::error::Selected Horizon revision does not pin minecraft.version."
+            exit 1
+          fi
+          echo "EXPECTED_MINECRAFT_VERSION=$EXPECTED_MINECRAFT_VERSION" >> "$GITHUB_ENV"
+      - name: Download Minecraft directly from Mojang
+        if: ${{ inputs.minecraft_release_tag == '' }}
+        env:
+          VERSION: ${{ inputs.minecraft_version || '26.3' }}
+          EXPECTED_VERSION: ${{ env.EXPECTED_MINECRAFT_VERSION }}
+        shell: bash
+        run: |
+          mkdir -p input/minecraft
+          python scripts/download_minecraft.py --version "$VERSION" --expected-version "$EXPECTED_VERSION" --output input/minecraft/minecraft.zip
+      - name: Download Minecraft game ZIP from legacy Release (optional)
+        if: ${{ inputs.minecraft_release_tag != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.MINECRAFT_INPUTS_TOKEN || github.token }}
+          MINECRAFT_INPUTS_TOKEN: ${{ secrets.MINECRAFT_INPUTS_TOKEN }}
+          SOURCE_REPOSITORY: ${{ inputs.minecraft_source_repository }}
+          TAG: ${{ inputs.minecraft_release_tag }}
+          ASSET: ${{ inputs.minecraft_asset_name }}
+        shell: bash
+        run: |
+          SOURCE_REPOSITORY="${SOURCE_REPOSITORY:-$GITHUB_REPOSITORY}"
+          if [[ "$SOURCE_REPOSITORY" != "$GITHUB_REPOSITORY" && -z "$MINECRAFT_INPUTS_TOKEN" ]]; then
+            echo "::error::A private/external Minecraft source repository requires the MINECRAFT_INPUTS_TOKEN Actions secret with read-only Contents access."
+            exit 1
+          fi
+          mkdir -p input/minecraft
+          temp_dir="$(mktemp -d)"
+          gh release download "$TAG" --repo "$SOURCE_REPOSITORY" --pattern "$ASSET" --dir "$temp_dir"
+          cp "$temp_dir/$ASSET" input/minecraft/minecraft.zip
+      - name: Validate downloaded Minecraft game files
+        run: python scripts/prepare.py --minecraft input/minecraft/minecraft.zip
+      - name: Extract the supplied Minecraft game files
+        id: instance
+        shell: bash
+        run: |
+          MINECRAFT_DIR="$(python scripts/extract_instance.py input/minecraft/minecraft.zip --destination input/extracted --print-root)"
+          echo "minecraft_dir=$MINECRAFT_DIR" >> "$GITHUB_OUTPUT"
+      - name: Verify Minecraft version against selected Horizon lock
+        shell: bash
+        run: |
+          MINECRAFT_VERSION="$(python scripts/validate_horizon_version.py --lock horizon-src/research-lock.json --minecraft-zip input/minecraft/minecraft.zip --print-version)"
+          echo "MINECRAFT_VERSION=$MINECRAFT_VERSION" >> "$GITHUB_ENV"
+      - name: Build Horizon launcher CLI
+        working-directory: horizon-src
+        shell: bash
+        run: cargo build --manifest-path launcher/Cargo.toml --locked --release --bin horizon-launcher
+      - name: Install and prepare a clean Horizon base
+        shell: bash
+        env:
+          MINECRAFT_DIR: ${{ steps.instance.outputs.minecraft_dir }}
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            CLI="horizon-src/launcher/target/release/horizon-launcher.exe"
+          else
+            CLI="horizon-src/launcher/target/release/horizon-launcher"
+          fi
+          HORIZON_TAG="$(python -c 'import json; print(json.load(open("build-report/horizon-nightly.json", encoding="utf-8"))["install_tag"])')"
+          echo "Installing exact Nightly: $HORIZON_TAG"
+          "$CLI" install "$HORIZON_TAG"
+          "$CLI" prepare --version "$HORIZON_TAG" --minecraft "$MINECRAFT_DIR"
+      - name: Safely extract selected registry .hnmod bundles
+        run: python scripts/extract_native_mods.py input/mods-latest --destination input/mods-latest-unpacked
+      - name: Build the Horizon core client
+        working-directory: horizon-src
+        shell: bash
+        run: cargo build --locked --release -p horizon-client --bin horizon-client
+      - name: Build optional native-mod variant
+        id: native_mods
+        shell: bash
+        run: |
+          echo "result=not-requested" >> "$GITHUB_OUTPUT"
+          if ! find input/mods-latest-unpacked -mindepth 1 -maxdepth 1 -type d -print -quit | grep -q .; then
+            echo "::error::No compatible registry native mods were selected; refusing a core-only build."
+            exit 1
+          fi
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            CLI="horizon-src/launcher/target/release/horizon-launcher.exe"
+          else
+            CLI="horizon-src/launcher/target/release/horizon-launcher"
+          fi
+          set -o pipefail
+          HORIZON_TAG="$(python -c 'import json; print(json.load(open("build-report/horizon-nightly.json", encoding="utf-8"))["install_tag"])')"
+          if "$CLI" native-build input/mods-latest-unpacked --version "$HORIZON_TAG" --trust-native-code --profile performance 2>&1 | tee native-build.log; then
+            echo "result=built" >> "$GITHUB_OUTPUT"
+          else
+            status=$?
+            echo "result=failed" >> "$GITHUB_OUTPUT"
+            echo "::error::Native-mod build failed (exit $status). Refusing to publish a core-only binary as a modded build."
+          fi
+          if grep -q "^result=failed$" "$GITHUB_OUTPUT"; then
+            exit 1
+          fi
+      - name: Collect the actual native client and build facts
+        if: always()
+        shell: bash
+        env:
+          CLIENT: ${{ matrix.client }}
+          TARGET: ${{ matrix.target }}
+          NATIVE_MOD_RESULT: ${{ steps.native_mods.outputs.result }}
+        run: |
+          mkdir -p "native-runtime" "build-report/$TARGET"
+          if [[ -f native-build.log ]]; then
+            cp native-build.log "build-report/$TARGET/"
+          fi
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            CORE="horizon-src/target/release/horizon-client.exe"
+            CORE_NAME="horizon-client-core.exe"
+          else
+            CORE="horizon-src/target/release/horizon-client"
+            CORE_NAME="horizon-client-core"
+          fi
+          if [[ ! -f "$CORE" ]]; then
+            echo "::error::The Horizon core client was not compiled."
+            exit 1
+          fi
+          cp "$CORE" "native-runtime/$CORE_NAME"
+          DATA_HOME="$HORIZON_LAUNCHER_HOME"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            DATA_HOME="$(cygpath -u "$HORIZON_LAUNCHER_HOME")"
+          fi
+          BUILT_MOD=0
+          NATIVE_VERSION=not-built
+          if [[ -d "$DATA_HOME/versions" ]]; then
+            find "$DATA_HOME/versions" -maxdepth 2 -type f -name "$CLIENT" -print > "build-report/$TARGET/candidate-files.txt"
+            for candidate in "$DATA_HOME"/versions/native-*/"$CLIENT"; do
+              if [[ -f "$candidate" ]]; then
+                cp "$candidate" "native-runtime/$CLIENT"
+                NATIVE_VERSION="$(basename "$(dirname "$candidate")")"
+                BUILT_MOD=1
+                break
+              fi
+            done
+          fi
+          if [[ "$BUILT_MOD" -eq 0 ]]; then
+            cp "$CORE" "native-runtime/$CLIENT"
+            BUILD_MODE=core-only
+          else
+            BUILD_MODE=core+native-mods
+            if [[ "$NATIVE_VERSION" != "native-${HORIZON_COMMIT:0:7}"* ]]; then
+              echo "::error::Native build revision mismatch: expected native-${HORIZON_COMMIT:0:7}..., got $NATIVE_VERSION"
+              exit 1
+            fi
+          fi
+          printf 'Horizon commit: %s\nMinecraft version: %s\nTarget: %s\nRunner: %s\nOptional native mods: %s\nBuild mode: %s\nNative version: %s\n' "$HORIZON_COMMIT" "$MINECRAFT_VERSION" "$TARGET" "$RUNNER_OS" "${NATIVE_MOD_RESULT:-unknown}" "$BUILD_MODE" "$NATIVE_VERSION" > "build-report/$TARGET/build.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-build-${{ matrix.target }}
+          path: |
+            native-runtime/
+            build-report/${{ matrix.target }}/
+          if-no-files-found: error
+          retention-days: 14
+
+  verify-native-artifacts:
+    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[build-native]') }}
+    needs: [validate, native-build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Download validated inputs and both platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "native-build-*"
+          path: verified
+          merge-multiple: false
+      - name: Download the pinned Horizon commit
+        uses: actions/download-artifact@v4
+        with:
+          name: validated-inputs
+          path: verified/inputs
+      - name: Verify both native artifacts use the same Horizon revision
+        run: |
+          python scripts/verify_native_artifacts.py \
+            --inputs verified/inputs \
+            --linux verified/native-build-linux-x86_64 \
+            --windows verified/native-build-windows-x86_64 \
+            --output build-report/native-build-verification.json
+      - name: Package Windows and Linux instance bundles
+        run: |
+          python scripts/package_instance.py --instance verified/inputs/input/instance/instance.zip --binary verified/native-build-windows-x86_64/native-runtime/horizon-client.exe --mods verified/inputs/input/mods-latest --target windows-x86_64 --horizon-commit "$(cat verified/inputs/build-report/horizon-commit.txt)" --output dist/horizon-instance-windows-x86_64.zip
+          python scripts/package_instance.py --instance verified/inputs/input/instance/instance.zip --binary verified/native-build-linux-x86_64/native-runtime/horizon-client --mods verified/inputs/input/mods-latest --target linux-x86_64 --horizon-commit "$(cat verified/inputs/build-report/horizon-commit.txt)" --output dist/horizon-instance-linux-x86_64.zip
+          mkdir -p dist/drop-in-windows dist/drop-in-linux
+          python -c "import zipfile; zipfile.ZipFile('dist/horizon-instance-windows-x86_64.zip').extractall('dist/drop-in-windows')"
+          python -c "import zipfile; zipfile.ZipFile('dist/horizon-instance-linux-x86_64.zip').extractall('dist/drop-in-linux')"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: horizon-instance-windows-x86_64
+          path: dist/horizon-instance-windows-x86_64.zip
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: horizon-instance-linux-x86_64
+          path: dist/horizon-instance-linux-x86_64.zip
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-build-verification
+          path: build-report/native-build-verification.json
+          if-no-files-found: error
+          retention-days: 30
+
+  preserve-instance:
+    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[build-native]') }}
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: validated-inputs
+          path: .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: horizon-instance-zip
+          path: input/instance/instance.zip
+          if-no-files-found: error
+          retention-days: 30
