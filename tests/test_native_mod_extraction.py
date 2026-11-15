@@ -7,7 +7,7 @@ import unittest
 import zipfile
 from unittest.mock import patch
 
-from scripts.extract_native_mods import extract_bundle
+from scripts.extract_native_mods import extract_bundle, main
 
 
 class NativeModExtractionTests(unittest.TestCase):
@@ -80,6 +80,39 @@ class NativeModExtractionTests(unittest.TestCase):
 
             self.assertEqual(sentinel.read_text(encoding="utf-8"), "preserve")
 
+    def test_rejects_casefold_alias_in_existing_destination(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            archive = root / "sample.hnmod"
+            self._bundle(archive)
+            destination = root / "out"
+            alias = destination / "Sample"
+            alias.mkdir(parents=True)
+            sentinel = alias / "keep.txt"
+            sentinel.write_text("unrelated bundle", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "case-insensitive destination path collision"):
+                extract_bundle(archive, destination)
+
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "unrelated bundle")
+            self.assertEqual([path.name for path in destination.iterdir()], ["Sample"])
+
+    def test_cli_does_not_create_destination_for_unsafe_bundle_name(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            source = root / "mods"
+            source.mkdir()
+            self._bundle(source / "...hnmod")
+            destination = root / "out"
+
+            with patch("sys.argv", [
+                "extract_native_mods.py", str(source), "--destination", str(destination)
+            ]):
+                with self.assertRaisesRegex(ValueError, "unsafe .hnmod filename"):
+                    main()
+
+            self.assertFalse(destination.exists())
+
     def test_failed_replacement_preserves_existing_bundle(self):
         with tempfile.TemporaryDirectory() as temp:
             root = pathlib.Path(temp)
@@ -120,10 +153,12 @@ class NativeModExtractionTests(unittest.TestCase):
 
             original_replace = os.replace
 
+            promotion_failed = False
+
             def fail_stage_promotion(source, dest):
-                source_path = pathlib.Path(source)
-                destination_path = pathlib.Path(dest)
-                if source_path.name.startswith(".sample.stage-") and destination_path == target:
+                nonlocal promotion_failed
+                if pathlib.Path(dest) == target and not promotion_failed:
+                    promotion_failed = True
                     raise OSError("simulated atomic promotion failure")
                 return original_replace(source, dest)
 

@@ -7,6 +7,7 @@ import pathlib
 import re
 import shutil
 import stat
+import unicodedata
 import tempfile
 import uuid
 import zipfile
@@ -42,6 +43,11 @@ def _is_link_or_reparse_point(path: pathlib.Path) -> bool:
     return stat.S_ISLNK(metadata.st_mode) or bool(
         getattr(metadata, "st_file_attributes", 0) & REPARSE_POINT
     )
+
+
+def _filesystem_collision_key(value: str) -> str:
+    """Match names the same way on case-insensitive, Unicode-normalizing filesystems."""
+    return unicodedata.normalize("NFC", value).casefold()
 
 
 def extract_bundle(archive_path: pathlib.Path, destination: pathlib.Path) -> pathlib.Path:
@@ -107,6 +113,12 @@ def extract_bundle(archive_path: pathlib.Path, destination: pathlib.Path) -> pat
             target = destination / stem
             if target.parent != destination:
                 raise ValueError(f"{archive_path.name}: unsafe native mod extraction target")
+            target_key = _filesystem_collision_key(stem)
+            for sibling in destination.iterdir():
+                if sibling.name != stem and _filesystem_collision_key(sibling.name) == target_key:
+                    raise ValueError(
+                        f"{sibling}: case-insensitive destination path collision with {stem!r}"
+                    )
             if _is_link_or_reparse_point(target):
                 raise ValueError(f"{target}: symlink or reparse-point extraction target refused")
             if target.exists() and not target.is_dir():
@@ -196,7 +208,6 @@ def main() -> None:
     parser.add_argument("source", type=pathlib.Path, nargs="?", default=pathlib.Path("input/mods"))
     parser.add_argument("--destination", type=pathlib.Path, default=pathlib.Path("input/mods-unpacked"))
     args = parser.parse_args()
-    args.destination.mkdir(parents=True, exist_ok=True)
     archives = sorted(args.source.glob("*.hnmod")) if args.source.is_dir() else []
     if not archives:
         print("No .hnmod bundles supplied; Core Build will produce the unmodified Horizon client.")
