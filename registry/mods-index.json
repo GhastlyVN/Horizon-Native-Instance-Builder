@@ -1,0 +1,95 @@
+{
+  "game": "26.3",
+  "health_report_updated_at": "2026-11-14T23:07:33Z",
+  "horizon_commit": "9f42064c11efe7ef3e5ed2baad7ddc2a3b36eea0",
+  "schema": 1,
+  "selected": [
+    {
+      "file": "appleskin-0.1.3.hnmod",
+      "game": "26.3",
+      "id": "appleskin",
+      "sha256": "2dac91d4c4c4ab65684f41a3279c6b27beffa7407e5362b0d7a97c28c07914a6",
+      "size": 9857,
+      "url": "https://github.com/horizon-rust/horizon-mods/releases/download/appleskin-0.1.3/appleskin-0.1.3.hnmod",
+      "version": "0.1.3"
+    },
+    {
+      "file": "hud_plus-4.hnmod",
+      "game": "26.3",
+      "id": "hud_plus",
+      "sha256": "0f94e0502ccd6a2b4905d4f4e41073e06726cb7ce50cd0d9ec1035841d72a957",
+      "size": 60129,
+      "url": "https://github.com/horizon-rust/horizon-mods/releases/download/hud_plus-4/hud_plus-4.hnmod",
+      "version": "4"
+    },
+    {
+      "file": "fast_items-0.1.0.hnmod",
+      "game": "26.3",
+      "id": "fast_items",
+      "sha256": "c3acd8adfeac6450c3a13b5172c8abb298cb3ceb355dfc539b4bdd653ef15502",
+      "size": 6636,
+      "url": "https://github.com/horizon-rust/horizon-mods/releases/download/fast_items-0.1.0/fast_items-0.1.0.hnmod",
+      "version": "0.1.0"
+    },
+    {
+      "file": "fullbright_horizon-1.0.0.hnmod",
+      "game": "26.3",
+      "id": "fullbright_horizon",
+      "sha256": "db6175eec1711dbc5ab2a2edc40eee9cbc4080ec1d706a3cef688e54ba9cb017",
+      "size": 7690,
+      "url": "https://github.com/horizon-rust/horizon-mods/releases/download/fullbright_horizon-1.0.0/fullbright_horizon-1.0.0.hnmod",
+      "version": "1.0.0"
+    },
+    {
+      "file": "jade-26.3.8.hnmod",
+      "game": "26.3",
+      "id": "jade",
+      "sha256": "eeb74fbcfbe75e568ecebdc82c8091c482e4f929dcb1f4d7390052d2ef8c5da8",
+      "size": 222986,
+      "url": "https://github.com/horizon-rust/horizon-mods/releases/download/jade-26.3.8/jade-26.3.8.hnmod",
+      "version": "26.3.8"
+    },
+    {
+      "file": "jei-0.2.1.hnmod",
+      "game": "26.3",
+      "id": "jei",
+      "sha256": "d0a840069ff9fb877021829584df72441928a9283feb27df30d244837bc7f2af",
+      "size": 31495,
+      "url": "https://github.com/horizon-rust/horizon-mods/releases/download/jei-0.2.1/jei-0.2.1.hnmod",
+      "version": "0.2.1"
+    },
+    {
+      "file": "zoom-2.0.0.hnmod",
+      "game": "26.3",
+      "id": "zoom",
+      "sha256": "49fa2d7d635225c53304fbf1477606c0677eb23d94dac75b730f6c3ba065f127",
+      "size": 5886,
+      "url": "https://github.com/horizon-rust/horizon-mods/releases/download/zoom-2.0.0/zoom-2.0.0.hnmod",
+      "version": "2.0.0"
+    },
+    {
+      "file": "enchantmenthints-0.1.0.hnmod",
+      "game": "26.3",
+      "id": "enchantmenthints",
+      "sha256": "6f1b80a7c22e02b086d5eea2ed6f7c5481b3e40d6a974bf9e382a3df4a2de9df",
+      "size": 18659,
+      "url": "https://github.com/horizon-rust/horizon-mods/releases/download/enchantmenthints-0.1.0/enchantmenthints-0.1.0.hnmod",
+      "version": "0.1.0"
+    }
+  ],
+  "skipped": [
+    {
+      "detail": "no source function 'horizon_client::game::Game<'_>::mapped_key'; use an exact crate::module::function, Type::method or <Type as Trait>::method ID",
+      "id": "freecam",
+      "reason": "official Nightly health check: E_TARGET_NOT_FOUND (apply)",
+      "version": "0.1.0"
+    },
+    {
+      "detail": "no source function 'horizon_client::game::tweaks::Game<'_>::sort_slots'; use an exact crate::module::function, Type::method or <Type as Trait>::method ID",
+      "id": "inventory_profiles",
+      "reason": "official Nightly health check: E_TARGET_NOT_FOUND (apply)",
+      "version": "1.0.0"
+    }
+  ],
+  "source": "Horizon official mod registry"
+}

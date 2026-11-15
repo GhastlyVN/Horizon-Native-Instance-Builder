@@ -14,6 +14,16 @@ on:
       - "input/mods/**"
   workflow_dispatch:
     inputs:
+      horizon_ref:
+        description: "Nightly tag from catalog/horizon-versions.json (nightly selects the newest)"
+        required: true
+        default: "nightly"
+        type: string
+      include_native_mods:
+        description: "Build only mods verified for the exact selected Horizon commit"
+        required: true
+        default: true
+        type: boolean
       instance_release_tag:
         description: "Optional release tag in THIS repository containing the instance ZIP"
         required: false
@@ -98,10 +108,18 @@ jobs:
           path: build-report/input-inspection.json
           if-no-files-found: error
           retention-days: 14
-      - name: Resolve the current official Horizon Nightly
-        run: python scripts/resolve_horizon_revision.py --output build-report/horizon-commit.txt --report build-report/horizon-nightly.json
-      - name: Download newest registry mods verified on this Nightly
+      - name: Resolve the selected official Horizon Nightly
+        env:
+          HORIZON_REF: ${{ inputs.horizon_ref || 'nightly' }}
+        run: python scripts/resolve_horizon_revision.py --ref "$HORIZON_REF" --output build-report/horizon-commit.txt --report build-report/horizon-nightly.json
+      - name: Download newest registry mods verified on the selected Nightly
+        if: ${{ inputs.include_native_mods != false }}
         run: python scripts/download_registry_mods.py --game 26.3 --horizon-commit "$(cat build-report/horizon-commit.txt)" --output input/mods-latest --report build-report/registry-mods.json
+      - name: Prepare an explicit core-only build when native mods are disabled
+        if: ${{ inputs.include_native_mods == false }}
+        run: |
+          mkdir -p input/mods-latest
+          python -c 'import json, pathlib; pathlib.Path("build-report/registry-mods.json").write_text(json.dumps({"schema": 1, "horizon_commit": pathlib.Path("build-report/horizon-commit.txt").read_text().strip(), "selected": [], "skipped": [{"reason": "native mods disabled for this build"}]}, indent=2) + "\\n")'
       - name: Verify selected registry native-mod extraction layout
         run: python scripts/extract_native_mods.py input/mods-latest --destination build-report/validated-native-mods-latest
       - uses: actions/upload-artifact@v4
@@ -263,8 +281,9 @@ jobs:
         run: |
           echo "result=not-requested" >> "$GITHUB_OUTPUT"
           if ! find input/mods-latest-unpacked -mindepth 1 -maxdepth 1 -type d -print -quit | grep -q .; then
-            echo "::error::No compatible registry native mods were selected; refusing a core-only build."
-            exit 1
+            echo "result=core-only" >> "$GITHUB_OUTPUT"
+            echo "No native mods selected; this is an explicitly requested core-only build."
+            exit 0
           fi
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             CLI="horizon-src/launcher/target/release/horizon-launcher.exe"

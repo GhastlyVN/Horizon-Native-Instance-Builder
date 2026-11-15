@@ -1,0 +1,52 @@
+name: Refresh Horizon versions and native mods
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/refresh-catalog.yml"
+      - "scripts/scan_horizon_versions.py"
+      - "scripts/resolve_horizon_revision.py"
+      - "scripts/download_registry_mods.py"
+      - "scripts/extract_native_mods.py"
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-horizon-catalog-main
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Scan official Horizon Nightly releases
+        run: python scripts/scan_horizon_versions.py --output catalog/horizon-versions.json --limit 50
+      - name: Resolve the current official Nightly commit
+        run: python scripts/resolve_horizon_revision.py --output build-report/horizon-commit.txt --report build-report/horizon-nightly.json
+      - name: Scan and download newest mods verified for the exact Nightly
+        run: python scripts/download_registry_mods.py --game 26.3 --horizon-commit "$(cat build-report/horizon-commit.txt)" --output registry/mods --report registry/mods-index.json
+      - name: Validate every selected native mod bundle
+        run: python scripts/extract_native_mods.py registry/mods --destination build-report/validated-registry-mods
+      - name: Publish catalog and updated native mods to this repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add catalog/horizon-versions.json registry/mods registry/mods-index.json
+          if git diff --cached --quiet; then
+            echo "Horizon version catalog and registry mods are already up to date."
+          else
+            git commit -m "chore: refresh Horizon version catalog and native mods"
+            git push
+          fi
