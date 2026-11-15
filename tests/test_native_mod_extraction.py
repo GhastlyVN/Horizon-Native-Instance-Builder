@@ -153,12 +153,12 @@ class NativeModExtractionTests(unittest.TestCase):
 
             original_replace = os.replace
 
-            promotion_failed = False
+            replace_calls = 0
 
             def fail_stage_promotion(source, dest):
-                nonlocal promotion_failed
-                if pathlib.Path(dest) == target and not promotion_failed:
-                    promotion_failed = True
+                nonlocal replace_calls
+                replace_calls += 1
+                if replace_calls == 2:
                     raise OSError("simulated atomic promotion failure")
                 return original_replace(source, dest)
 
@@ -166,6 +166,10 @@ class NativeModExtractionTests(unittest.TestCase):
                 with self.assertRaisesRegex(OSError, "simulated atomic promotion failure"):
                     extract_bundle(archive, destination)
 
+            self.assertEqual(
+                replace_calls, 3,
+                "old target, failed promotion, and rollback must all use os.replace",
+            )
             self.assertEqual(sentinel.read_text(encoding="utf-8"), "old bundle")
             self.assertEqual([path.name for path in destination.iterdir()], ["sample"])
 
