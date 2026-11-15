@@ -14,7 +14,7 @@ SHA = re.compile(r"^[0-9a-f]{40}$")
 
 
 def fetch_release(ref: str = "nightly") -> dict:
-    if not re.fullmatch(r"nightly(?:-\\d{4}-\\d{2}-\\d{2})?", ref):
+    if not re.fullmatch(r"nightly(?:-\d{4}-\d{2}-\d{2})?", ref):
         raise ValueError("Horizon ref must be 'nightly' or a catalogued nightly-YYYY-MM-DD tag.")
     request = urllib.request.Request(
         API + urllib.parse.quote(ref, safe=""),
