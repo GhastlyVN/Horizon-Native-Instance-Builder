@@ -61,21 +61,24 @@ class NativeModExtractionTests(unittest.TestCase):
                 extract_bundle(archive, root / "out")
 
 
-    def test_rejects_unsafe_archive_stem_before_creating_destination(self):
+    def test_rejects_unsafe_archive_stems_before_creating_destination(self):
         with tempfile.TemporaryDirectory() as temp:
             root = pathlib.Path(temp)
-            archive = root / "...hnmod"
-            self._bundle(archive)
             sentinel = root / "keep.txt"
             sentinel.write_text("preserve", encoding="utf-8")
             destination = root / "out"
 
-            with self.assertRaisesRegex(ValueError, "unsafe .hnmod filename"):
-                extract_bundle(archive, destination)
+            for filename in ("...hnmod", "con.hnmod", "nul.hnmod", "com1.hnmod"):
+                with self.subTest(filename=filename):
+                    archive = root / filename
+                    self._bundle(archive)
+                    with self.assertRaisesRegex(ValueError, "unsafe .hnmod filename"):
+                        extract_bundle(archive, destination)
+                    self.assertTrue(archive.is_file())
+                    archive.unlink()
+                    self.assertFalse(destination.exists())
 
             self.assertEqual(sentinel.read_text(encoding="utf-8"), "preserve")
-            self.assertTrue(archive.is_file())
-            self.assertFalse(destination.exists())
 
     def test_failed_replacement_preserves_existing_bundle(self):
         with tempfile.TemporaryDirectory() as temp:

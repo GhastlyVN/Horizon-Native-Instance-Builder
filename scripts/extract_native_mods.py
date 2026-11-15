@@ -16,6 +16,7 @@ try:
         MAX_ARCHIVE_ENTRIES,
         MAX_MEMBER_UNCOMPRESSED_BYTES,
         MAX_TOTAL_UNCOMPRESSED_BYTES,
+        WINDOWS_RESERVED_NAMES,
         validate_zip,
     )
 except ModuleNotFoundError:  # direct execution: python scripts/extract_native_mods.py
@@ -46,7 +47,11 @@ def extract_bundle(archive_path: pathlib.Path, destination: pathlib.Path) -> pat
     # The output directory is derived from the archive's filesystem name, not a ZIP member.
     # Keep it to the same portable identifier grammar as a native mod ID before any writes.
     stem = archive_path.stem
-    if archive_path.suffix.lower() != ".hnmod" or not BUNDLE_STEM.fullmatch(stem):
+    if (
+        archive_path.suffix.lower() != ".hnmod"
+        or not BUNDLE_STEM.fullmatch(stem)
+        or stem.upper() in WINDOWS_RESERVED_NAMES
+    ):
         raise ValueError(f"{archive_path.name}: unsafe .hnmod filename")
 
     _, names = validate_zip(archive_path)
