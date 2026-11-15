@@ -1,6 +1,15 @@
 name: Refresh Horizon versions and native mods
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/refresh-catalog.yml"
+      - "scripts/scan_horizon_versions.py"
+      - "scripts/resolve_horizon_revision.py"
+      - "scripts/download_registry_mods.py"
+      - "scripts/extract_native_mods.py"
   schedule:
     - cron: "17 4 * * 1"
   workflow_dispatch:
