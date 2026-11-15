@@ -1,0 +1,96 @@
+{
+  "schema": 1,
+  "source": "https://github.com/horizon-rust/horizon/releases",
+  "versions": [
+    {
+      "assets": [
+        {
+          "name": "horizon-linux-x86_64.tar.gz",
+          "size": 55636015,
+          "url": "https://github.com/horizon-rust/horizon/releases/download/nightly/horizon-linux-x86_64.tar.gz"
+        },
+        {
+          "name": "horizon-macos-arm64.zip",
+          "size": 47644205,
+          "url": "https://github.com/horizon-rust/horizon/releases/download/nightly/horizon-macos-arm64.zip"
+        },
+        {
+          "name": "horizon-macos-x64.zip",
+          "size": 50657888,
+          "url": "https://github.com/horizon-rust/horizon/releases/download/nightly/horizon-macos-x64.zip"
+        },
+        {
+          "name": "horizon-windows-x64.zip",
+          "size": 59252227,
+          "url": "https://github.com/horizon-rust/horizon/releases/download/nightly/horizon-windows-x64.zip"
+        }
+      ],
+      "commit": "9f42064c11efe7ef3e5ed2baad7ddc2a3b36eea0",
+      "install_tag": "nightly-2026-11-13-9f42064",
+      "name": "Nightly 2026-11-13 \u00b7 9f42064",
+      "published_at": "2026-11-13T07:47:16Z",
+      "tag": "nightly",
+      "url": "https://github.com/horizon-rust/horizon/releases/tag/nightly"
+    },
+    {
+      "assets": [
+        {
+          "name": "horizon-linux-x86_64.tar.gz",
+          "size": 45680510,
+          "url": "https://github.com/horizon-rust/horizon/releases/download/nightly-2026-11-08/horizon-linux-x86_64.tar.gz"
+        },
+        {
+          "name": "horizon-macos-arm64.zip",
+          "size": 41518319,
+          "url": "https://github.com/horizon-rust/horizon/releases/download/nightly-2026-11-08/horizon-macos-arm64.zip"
+        },
+        {
+          "name": "horizon-macos-x64.zip",
+          "size": 44289947,
+          "url": "https://github.com/horizon-rust/horizon/releases/download/nightly-2026-11-08/horizon-macos-x64.zip"
+        },
+        {
+          "name": "horizon-windows-x64.zip",
+          "size": 43728779,
+          "url": "https://github.com/horizon-rust/horizon/releases/download/nightly-2026-11-08/horizon-windows-x64.zip"
+        }
+      ],
+      "commit": "fdc87aecdbd116bf1e08adcd062fcbaea8c2e2ca",
+      "install_tag": "nightly-2026-11-08-fdc87ae",
+      "name": "Nightly 2026-11-08 \u00b7 fdc87ae",
+      "published_at": "2026-11-08T15:14:22Z",
+      "tag": "nightly-2026-11-08",
+      "url": "https://github.com/horizon-rust/horizon/releases/tag/nightly-2026-11-08"
+    },
+    {
+      "assets": [
+        {
+          "name": "horizon-linux-x86_64.tar.gz",
+          "size": 45675235,
+          "url": "https://github.com/horizon-rust/horizon/releases/download/nightly-2026-11-07/horizon-linux-x86_64.tar.gz"
+        },
+        {
+          "name": "horizon-macos-arm64.zip",
+          "size": 41517736,
+          "url": "https://github.com/horizon-rust/horizon/releases/download/nightly-2026-11-07/horizon-macos-arm64.zip"
+        },
+        {
+          "name": "horizon-macos-x64.zip",
+          "size": 44289347,
+          "url": "https://github.com/horizon-rust/horizon/releases/download/nightly-2026-11-07/horizon-macos-x64.zip"
+        },
+        {
+          "name": "horizon-windows-x64.zip",
+          "size": 43725292,
+          "url": "https://github.com/horizon-rust/horizon/releases/download/nightly-2026-11-07/horizon-windows-x64.zip"
+        }
+      ],
+      "commit": "2ebf00a0281c592f79191e76fce0e7d522c6f425",
+      "install_tag": "nightly-2026-11-07-2ebf00a",
+      "name": "Nightly 2026-11-07 \u00b7 2ebf00a",
+      "published_at": "2026-11-07T18:34:22Z",
+      "tag": "nightly-2026-11-07",
+      "url": "https://github.com/horizon-rust/horizon/releases/tag/nightly-2026-11-07"
+    }
+  ]
+}
