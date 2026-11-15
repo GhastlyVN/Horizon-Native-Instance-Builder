@@ -11,7 +11,7 @@ from pathlib import Path
 API = "https://api.github.com/repos/horizon-rust/horizon/releases?per_page=100"
 SHA = re.compile(r"^[0-9a-f]{40}$")
 NIGHTLY_TAG = re.compile(r"^nightly(?:-\d{4}-\d{2}-\d{2})?$")
-ASSET = re.compile(r"^horizon-(?:linux-x86_64|windows-x86_64|macos-(?:arm64|x86_64))\.(?:tar\.gz|zip)$")
+ASSET = re.compile(r"^horizon-(?:linux-x86_64|windows-x64|macos-(?:arm64|x64))\.(?:tar\.gz|zip)$")
 
 
 def fetch_releases() -> list[dict]:
