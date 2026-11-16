@@ -32,6 +32,7 @@ except ModuleNotFoundError:  # direct execution: python scripts/extract_native_m
 
 BUNDLE_STEM = re.compile(r"[a-z][a-z0-9_-]{0,63}")
 CHUNK_SIZE = 1024 * 1024
+MAX_MANIFEST_BYTES = 1024 * 1024
 REPARSE_POINT = 0x400
 
 
@@ -50,6 +51,15 @@ def _filesystem_collision_key(value: str) -> str:
     return unicodedata.normalize("NFC", value).casefold()
 
 
+def _reject_duplicate_json_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
 def extract_bundle(archive_path: pathlib.Path, destination: pathlib.Path) -> pathlib.Path:
     # The output directory is derived from the archive's filesystem name, not a ZIP member.
     # Keep it to the same portable identifier grammar as a native mod ID before any writes.
@@ -61,20 +71,21 @@ def extract_bundle(archive_path: pathlib.Path, destination: pathlib.Path) -> pat
     ):
         raise ValueError(f"{archive_path.name}: unsafe .hnmod filename")
 
-    _, names = validate_zip(archive_path)
-    native = [name for name in names if pathlib.PurePosixPath(name).name == "horizon-native.json"]
-    mixins = [name for name in names if pathlib.PurePosixPath(name).name == "horizon-mixin.toml"]
-    if len(native) != 1 or len(mixins) != 1:
-        raise ValueError(
-            f"{archive_path.name}: expected exactly one horizon-native.json and one "
-            "horizon-mixin.toml; validate the .hnmod bundle layout"
-        )
-
-    native_path = pathlib.PurePosixPath(native[0])
-    root_prefix = native_path.parent.as_posix()
-    root_prefix = "" if root_prefix == "." else root_prefix + "/"
     try:
         with zipfile.ZipFile(archive_path) as bundle:
+            # Validate and extract through this exact open archive; never reopen the path.
+            _, names = validate_zip(bundle)
+            native = [name for name in names if pathlib.PurePosixPath(name).name == "horizon-native.json"]
+            mixins = [name for name in names if pathlib.PurePosixPath(name).name == "horizon-mixin.toml"]
+            if len(native) != 1 or len(mixins) != 1:
+                raise ValueError(
+                    f"{archive_path.name}: expected exactly one horizon-native.json and one "
+                    "horizon-mixin.toml; validate the .hnmod bundle layout"
+                )
+
+            native_path = pathlib.PurePosixPath(native[0])
+            root_prefix = native_path.parent.as_posix()
+            root_prefix = "" if root_prefix == "." else root_prefix + "/"
             entries = bundle.infolist()
             if not entries:
                 raise ValueError(f"{archive_path.name}: empty ZIP archive")
@@ -93,8 +104,25 @@ def extract_bundle(archive_path: pathlib.Path, destination: pathlib.Path) -> pat
             native_info = members.get(native[0])
             if native_info is None:
                 raise ValueError(f"{archive_path.name}: native manifest entry could not be resolved")
-            raw_manifest = bundle.read(native_info)
-            manifest = json.loads(raw_manifest)
+            if native_info.file_size < 0 or native_info.file_size > MAX_MANIFEST_BYTES:
+                raise ValueError(
+                    f"{archive_path.name}: native manifest exceeds size limit "
+                    f"({MAX_MANIFEST_BYTES} bytes): {native[0]}"
+                )
+            with bundle.open(native_info) as manifest_stream:
+                raw_manifest = manifest_stream.read(MAX_MANIFEST_BYTES + 1)
+            if len(raw_manifest) > MAX_MANIFEST_BYTES:
+                raise ValueError(
+                    f"{archive_path.name}: native manifest exceeds size limit "
+                    f"({MAX_MANIFEST_BYTES} bytes): {native[0]}"
+                )
+            if len(raw_manifest) != native_info.file_size:
+                raise ValueError(
+                    f"{archive_path.name}: native manifest size does not match its ZIP metadata"
+                )
+            manifest = json.loads(
+                raw_manifest, object_pairs_hook=_reject_duplicate_json_keys
+            )
             if not isinstance(manifest, dict):
                 raise ValueError(f"{archive_path.name}: horizon-native.json must contain a JSON object")
             mod_id = manifest.get("id")

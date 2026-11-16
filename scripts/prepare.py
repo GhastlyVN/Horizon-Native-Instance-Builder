@@ -274,102 +274,108 @@ def validate_minecraft_archive(path, names):
 
     return root
 
+def validate_zip_archive(z):
+    """Validate an already-open ZIP so callers can preflight and consume the same bytes."""
+    entries = z.infolist()
+    if not entries:
+        raise ValueError(f"Empty ZIP archive: {getattr(z, 'filename', '<open ZIP>')}")
+    if len(entries) > MAX_ARCHIVE_ENTRIES:
+        raise ValueError(
+            f"ZIP archive has too many entries: {len(entries)} "
+            f"(limit {MAX_ARCHIVE_ENTRIES})"
+        )
+    total_uncompressed = 0
+    for item in entries:
+        if item.flag_bits & 0x1:
+            raise ValueError(f"Encrypted ZIP entry refused: {item.filename}")
+        if item.is_dir():
+            continue
+        if item.file_size < 0 or item.file_size > MAX_MEMBER_UNCOMPRESSED_BYTES:
+            raise ValueError(
+                f"ZIP member exceeds the uncompressed size limit: {item.filename}"
+            )
+        total_uncompressed += item.file_size
+        if total_uncompressed > MAX_TOTAL_UNCOMPRESSED_BYTES:
+            raise ValueError(
+                "ZIP archive exceeds the total uncompressed size limit "
+                f"({MAX_TOTAL_UNCOMPRESSED_BYTES} bytes)"
+            )
+    names = []
+    seen = set()
+    seen_casefold = set()
+    files = set()
+    files_casefold = set()
+    prefix_spellings = {}
+    for item in entries:
+        raw_name = item.filename.replace(chr(92), "/")
+        parts = pathlib.PurePosixPath(raw_name).parts
+        if (not parts or raw_name.startswith("/") or chr(0) in raw_name
+                or ".." in parts or any(not _portable_windows_component(part) for part in parts)):
+            raise ValueError(f"Unsafe ZIP path: {item.filename}")
+        name = "/".join(parts)
+        if name in seen:
+            raise ValueError(f"Duplicate ZIP path after normalization: {item.filename}")
+        folded = _collision_key(name)
+        if folded in seen_casefold:
+            raise ValueError(
+                f"Case-insensitive ZIP path collision: {item.filename}"
+            )
+        # A ZIP may be path-safe yet impossible to extract: a regular file cannot
+        # also be a parent directory (for example, "game/mods" and
+        # "game/mods/example.jar"). Reject this before creating any files.
+        parents = ["/".join(parts[:index]) for index in range(1, len(parts))]
+        folded_parents = [_collision_key(parent) for parent in parents]
+        conflicting_parent = next(
+            (parent for parent in folded_parents if parent in files_casefold), None
+        )
+        if conflicting_parent is not None:
+            raise ValueError(
+                f"ZIP file/directory path collision: {item.filename} is below file {conflicting_parent}"
+            )
+        is_directory = item.is_dir() or raw_name.endswith("/")
+        # Directory prefixes must keep one exact spelling across the archive. Otherwise
+        # Windows may merge paths that Linux/macOS extract into separate directories.
+        prefix_count = len(parts) if is_directory else len(parts) - 1
+        for index in range(1, prefix_count + 1):
+            prefix = "/".join(parts[:index])
+            folded_prefix = _collision_key(prefix)
+            previous_prefix = prefix_spellings.get(folded_prefix)
+            if previous_prefix is not None and previous_prefix != prefix:
+                raise ValueError(
+                    f"Case-insensitive ZIP directory prefix collision: {item.filename}"
+                )
+            prefix_spellings[folded_prefix] = prefix
+        if not is_directory and any(
+            existing.startswith(folded + "/") for existing in seen_casefold
+        ):
+            raise ValueError(
+                f"ZIP file/directory path collision: {item.filename} replaces a directory"
+            )
+        seen.add(name)
+        seen_casefold.add(folded)
+        if not is_directory:
+            files.add(name)
+            files_casefold.add(folded)
+        mode = (item.external_attr >> 16) & 0o170000
+        if mode == 0o120000:
+            raise ValueError(f"Symlink entry refused: {item.filename}")
+        if mode not in (0, 0o100000, 0o040000):
+            raise ValueError(f"Unsupported special ZIP entry refused: {item.filename}")
+        if mode == 0o040000 and not is_directory:
+            raise ValueError(f"ZIP directory mode/name mismatch: {item.filename}")
+        if mode == 0o100000 and is_directory:
+            raise ValueError(f"ZIP file mode/name mismatch: {item.filename}")
+        names.append(name)
+    return len(entries), names
+
+
 def validate_zip(path):
+    if isinstance(path, zipfile.ZipFile):
+        return validate_zip_archive(path)
     if not zipfile.is_zipfile(path):
         raise ValueError(f"Not a ZIP archive: {path}")
     with zipfile.ZipFile(path) as z:
-        entries = z.infolist()
-        if not entries:
-            raise ValueError(f"Empty ZIP archive: {path}")
-        if len(entries) > MAX_ARCHIVE_ENTRIES:
-            raise ValueError(
-                f"ZIP archive has too many entries: {len(entries)} "
-                f"(limit {MAX_ARCHIVE_ENTRIES})"
-            )
-        total_uncompressed = 0
-        for item in entries:
-            if item.flag_bits & 0x1:
-                raise ValueError(f"Encrypted ZIP entry refused: {item.filename}")
-            if item.is_dir():
-                continue
-            if item.file_size < 0 or item.file_size > MAX_MEMBER_UNCOMPRESSED_BYTES:
-                raise ValueError(
-                    f"ZIP member exceeds the uncompressed size limit: {item.filename}"
-                )
-            total_uncompressed += item.file_size
-            if total_uncompressed > MAX_TOTAL_UNCOMPRESSED_BYTES:
-                raise ValueError(
-                    "ZIP archive exceeds the total uncompressed size limit "
-                    f"({MAX_TOTAL_UNCOMPRESSED_BYTES} bytes)"
-                )
-        names = []
-        seen = set()
-        seen_casefold = set()
-        files = set()
-        files_casefold = set()
-        prefix_spellings = {}
-        for item in entries:
-            raw_name = item.filename.replace(chr(92), "/")
-            parts = pathlib.PurePosixPath(raw_name).parts
-            if (not parts or raw_name.startswith("/") or chr(0) in raw_name
-                    or ".." in parts or any(not _portable_windows_component(part) for part in parts)):
-                raise ValueError(f"Unsafe ZIP path: {item.filename}")
-            name = "/".join(parts)
-            if name in seen:
-                raise ValueError(f"Duplicate ZIP path after normalization: {item.filename}")
-            folded = _collision_key(name)
-            if folded in seen_casefold:
-                raise ValueError(
-                    f"Case-insensitive ZIP path collision: {item.filename}"
-                )
-            # A ZIP may be path-safe yet impossible to extract: a regular file cannot
-            # also be a parent directory (for example, "game/mods" and
-            # "game/mods/example.jar"). Reject this before creating any files.
-            parents = ["/".join(parts[:index]) for index in range(1, len(parts))]
-            folded_parents = [_collision_key(parent) for parent in parents]
-            conflicting_parent = next(
-                (parent for parent in folded_parents if parent in files_casefold), None
-            )
-            if conflicting_parent is not None:
-                raise ValueError(
-                    f"ZIP file/directory path collision: {item.filename} is below file {conflicting_parent}"
-                )
-            is_directory = item.is_dir() or raw_name.endswith("/")
-            # Directory prefixes must keep one exact spelling across the archive. Otherwise
-            # Windows may merge paths that Linux/macOS extract into separate directories.
-            prefix_count = len(parts) if is_directory else len(parts) - 1
-            for index in range(1, prefix_count + 1):
-                prefix = "/".join(parts[:index])
-                folded_prefix = _collision_key(prefix)
-                previous_prefix = prefix_spellings.get(folded_prefix)
-                if previous_prefix is not None and previous_prefix != prefix:
-                    raise ValueError(
-                        f"Case-insensitive ZIP directory prefix collision: {item.filename}"
-                    )
-                prefix_spellings[folded_prefix] = prefix
-            if not is_directory and any(
-                existing.startswith(folded + "/") for existing in seen_casefold
-            ):
-                raise ValueError(
-                    f"ZIP file/directory path collision: {item.filename} replaces a directory"
-                )
-            seen.add(name)
-            seen_casefold.add(folded)
-            if not is_directory:
-                files.add(name)
-                files_casefold.add(folded)
-            mode = (item.external_attr >> 16) & 0o170000
-            if mode == 0o120000:
-                raise ValueError(f"Symlink entry refused: {item.filename}")
-            if mode not in (0, 0o100000, 0o040000):
-                raise ValueError(f"Unsupported special ZIP entry refused: {item.filename}")
-            if mode == 0o040000 and not is_directory:
-                raise ValueError(f"ZIP directory mode/name mismatch: {item.filename}")
-            if mode == 0o100000 and is_directory:
-                raise ValueError(f"ZIP file mode/name mismatch: {item.filename}")
-            names.append(name)
-        return len(entries), names
-
+        return validate_zip_archive(z)
 
 def main():
     ap = argparse.ArgumentParser()

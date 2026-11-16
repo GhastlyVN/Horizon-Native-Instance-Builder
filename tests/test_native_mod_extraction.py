@@ -7,7 +7,7 @@ import unittest
 import zipfile
 from unittest.mock import patch
 
-from scripts.extract_native_mods import extract_bundle, main
+from scripts.extract_native_mods import MAX_MANIFEST_BYTES, extract_bundle, main
 
 
 class NativeModExtractionTests(unittest.TestCase):
@@ -37,6 +37,61 @@ class NativeModExtractionTests(unittest.TestCase):
             archive = root / "sample.hnmod"
             self._bundle(archive, "sample")
             result = extract_bundle(archive, root / "out")
+            self.assertTrue((result / "horizon-native.json").is_file())
+
+    def test_rejects_duplicate_manifest_keys(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            archive = root / "sample.hnmod"
+            with zipfile.ZipFile(archive, "w") as bundle:
+                bundle.writestr(
+                    "horizon-native.json",
+                    '{"id":"sample_mod","id":"sample_mod"}',
+                )
+                bundle.writestr(
+                    "mixins/sample_mod/horizon-mixin.toml",
+                    '[mod]\\nid = "sample_mod"\\n',
+                )
+            with self.assertRaisesRegex(ValueError, "duplicate JSON key: id"):
+                extract_bundle(archive, root / "out")
+
+    def test_rejects_oversized_manifest_before_opening_member(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            archive = root / "sample.hnmod"
+            self._bundle(archive)
+            original_infolist = zipfile.ZipFile.infolist
+
+            def oversized_manifest(instance):
+                entries = original_infolist(instance)
+                for info in entries:
+                    if info.filename == "horizon-native.json":
+                        info.file_size = MAX_MANIFEST_BYTES + 1
+                return entries
+
+            with (
+                patch.object(zipfile.ZipFile, "infolist", oversized_manifest),
+                patch.object(
+                    zipfile.ZipFile,
+                    "open",
+                    side_effect=AssertionError("oversized manifest must not be opened"),
+                ),
+            ):
+                with self.assertRaisesRegex(ValueError, "native manifest exceeds size limit"):
+                    extract_bundle(archive, root / "out")
+
+    def test_validation_and_extraction_share_one_open_archive(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            archive = root / "sample.hnmod"
+            self._bundle(archive)
+
+            with patch(
+                "scripts.prepare.zipfile.is_zipfile",
+                side_effect=AssertionError("validation must not reopen the archive path"),
+            ):
+                result = extract_bundle(archive, root / "out")
+
             self.assertTrue((result / "horizon-native.json").is_file())
 
     def test_rejects_mismatched_manifest_id_and_mixin_path(self):
