@@ -168,7 +168,13 @@ def extract_bundle(archive_path: pathlib.Path, destination: pathlib.Path) -> pat
                     info = members.get(name)
                     if info is None:
                         raise ValueError(f"{archive_path.name}: ZIP entry could not be resolved: {name}")
-                    if info.is_dir() or relative.endswith("/"):
+                    # Match validate_zip's normalized separator policy: ZipInfo.is_dir()
+                    # only recognizes forward-slash directory entries.
+                    is_directory = (
+                        info.is_dir()
+                        or info.filename.replace(chr(92), "/").endswith("/")
+                    )
+                    if is_directory:
                         continue
                     rel = pathlib.PurePosixPath(relative)
                     if rel.is_absolute() or any(part in ("", ".", "..") for part in rel.parts):

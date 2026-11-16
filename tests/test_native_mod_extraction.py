@@ -31,6 +31,20 @@ class NativeModExtractionTests(unittest.TestCase):
             self.assertTrue((result / "horizon-native.json").is_file())
             self.assertTrue((result / "mixins/sample_mod/horizon-mixin.toml").is_file())
 
+    def test_backslash_directory_entries_follow_validator_normalization(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            archive = root / "sample.hnmod"
+            self._bundle(archive)
+            with zipfile.ZipFile(archive, "a") as bundle:
+                bundle.writestr("mixins\\", "")
+                bundle.writestr("mixins\\sample_mod\\", "")
+
+            result = extract_bundle(archive, root / "out")
+
+            self.assertTrue((result / "mixins/sample_mod/horizon-mixin.toml").is_file())
+            self.assertTrue((result / "mixins/sample_mod/src/lib.rs").is_file())
+
     def test_strips_single_bundle_directory_prefix(self):
         with tempfile.TemporaryDirectory() as temp:
             root = pathlib.Path(temp)
