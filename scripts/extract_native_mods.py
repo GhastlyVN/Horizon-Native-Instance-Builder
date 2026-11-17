@@ -136,103 +136,112 @@ def extract_bundle(archive_path: pathlib.Path, destination: pathlib.Path) -> pat
 
             if _is_link_or_reparse_point(destination):
                 raise ValueError(f"{destination}: symlink extraction destination refused")
+            created_destination = not destination.exists()
             destination.mkdir(parents=True, exist_ok=True)
             destination = destination.resolve()
             target = destination / stem
-            if target.parent != destination:
-                raise ValueError(f"{archive_path.name}: unsafe native mod extraction target")
-            target_key = _filesystem_collision_key(stem)
-            for sibling in destination.iterdir():
-                if sibling.name != stem and _filesystem_collision_key(sibling.name) == target_key:
-                    raise ValueError(
-                        f"{sibling}: case-insensitive destination path collision with {stem!r}"
-                    )
-            if _is_link_or_reparse_point(target):
-                raise ValueError(f"{target}: symlink or reparse-point extraction target refused")
-            if target.exists() and not target.is_dir():
-                raise ValueError(f"{target}: existing extraction target is not a directory")
-
-            # Stage on the destination filesystem. The old target is not touched until every
-            # member has been streamed, size-checked and the required manifests are present.
-            with tempfile.TemporaryDirectory(
-                prefix=f".{stem}.stage-", dir=destination
-            ) as temp:
-                staging = pathlib.Path(temp)
-                total_uncompressed = 0
-                for name in names:
-                    if root_prefix and not name.startswith(root_prefix):
-                        continue
-                    relative = name[len(root_prefix):] if root_prefix else name
-                    if not relative:
-                        continue
-                    info = members.get(name)
-                    if info is None:
-                        raise ValueError(f"{archive_path.name}: ZIP entry could not be resolved: {name}")
-                    # Match validate_zip's normalized separator policy: ZipInfo.is_dir()
-                    # only recognizes forward-slash directory entries.
-                    is_directory = (
-                        info.is_dir()
-                        or info.filename.replace(chr(92), "/").endswith("/")
-                    )
-                    if is_directory:
-                        continue
-                    rel = pathlib.PurePosixPath(relative)
-                    if rel.is_absolute() or any(part in ("", ".", "..") for part in rel.parts):
-                        raise ValueError(f"{archive_path.name}: unsafe bundle path {relative!r}")
-                    if info.file_size < 0 or info.file_size > MAX_MEMBER_UNCOMPRESSED_BYTES:
+            try:
+                if target.parent != destination:
+                    raise ValueError(f"{archive_path.name}: unsafe native mod extraction target")
+                target_key = _filesystem_collision_key(stem)
+                for sibling in destination.iterdir():
+                    if sibling.name != stem and _filesystem_collision_key(sibling.name) == target_key:
                         raise ValueError(
-                            f"{archive_path.name}: ZIP member exceeds the uncompressed size limit: {name}"
+                            f"{sibling}: case-insensitive destination path collision with {stem!r}"
                         )
-                    output = staging.joinpath(*rel.parts)
-                    output.parent.mkdir(parents=True, exist_ok=True)
-                    actual_member_uncompressed = 0
-                    with bundle.open(info) as source, output.open("xb") as sink:
-                        while chunk := source.read(CHUNK_SIZE):
-                            actual_member_uncompressed += len(chunk)
-                            total_uncompressed += len(chunk)
-                            if actual_member_uncompressed > MAX_MEMBER_UNCOMPRESSED_BYTES:
-                                raise ValueError(
-                                    f"{archive_path.name}: actual ZIP member exceeds the uncompressed size limit: {name}"
-                                )
-                            if actual_member_uncompressed > info.file_size:
-                                raise ValueError(
-                                    f"{archive_path.name}: ZIP member expands beyond its declared size: {name}"
-                                )
-                            if total_uncompressed > MAX_TOTAL_UNCOMPRESSED_BYTES:
-                                raise ValueError(
-                                    f"{archive_path.name}: actual ZIP archive exceeds the total uncompressed size limit "
-                                    f"({MAX_TOTAL_UNCOMPRESSED_BYTES} bytes)"
-                                )
-                            sink.write(chunk)
-                    if actual_member_uncompressed != info.file_size:
-                        raise ValueError(
-                            f"{archive_path.name}: ZIP member size does not match its declared size: {name}"
+                if _is_link_or_reparse_point(target):
+                    raise ValueError(f"{target}: symlink or reparse-point extraction target refused")
+                if target.exists() and not target.is_dir():
+                    raise ValueError(f"{target}: existing extraction target is not a directory")
+    
+                # Stage on the destination filesystem. The old target is not touched until every
+                # member has been streamed, size-checked and the required manifests are present.
+                with tempfile.TemporaryDirectory(
+                    prefix=f".{stem}.stage-", dir=destination
+                ) as temp:
+                    staging = pathlib.Path(temp)
+                    total_uncompressed = 0
+                    for name in names:
+                        if root_prefix and not name.startswith(root_prefix):
+                            continue
+                        relative = name[len(root_prefix):] if root_prefix else name
+                        if not relative:
+                            continue
+                        info = members.get(name)
+                        if info is None:
+                            raise ValueError(f"{archive_path.name}: ZIP entry could not be resolved: {name}")
+                        # Match validate_zip's normalized separator policy: ZipInfo.is_dir()
+                        # only recognizes forward-slash directory entries.
+                        is_directory = (
+                            info.is_dir()
+                            or info.filename.replace(chr(92), "/").endswith("/")
                         )
-
-                if not (staging / "horizon-native.json").is_file():
-                    raise ValueError(f"{archive_path.name}: native manifest was not extracted at bundle root")
-                if not (staging / f"mixins/{mod_id}/horizon-mixin.toml").is_file():
-                    raise ValueError(f"{archive_path.name}: mixin manifest was not extracted")
-
-                backup = None
-                if target.exists():
-                    backup = destination / f".{stem}.backup-{uuid.uuid4().hex}"
-                    os.replace(target, backup)
-                try:
-                    os.replace(staging, target)
-                except BaseException:
+                        if is_directory:
+                            continue
+                        rel = pathlib.PurePosixPath(relative)
+                        if rel.is_absolute() or any(part in ("", ".", "..") for part in rel.parts):
+                            raise ValueError(f"{archive_path.name}: unsafe bundle path {relative!r}")
+                        if info.file_size < 0 or info.file_size > MAX_MEMBER_UNCOMPRESSED_BYTES:
+                            raise ValueError(
+                                f"{archive_path.name}: ZIP member exceeds the uncompressed size limit: {name}"
+                            )
+                        output = staging.joinpath(*rel.parts)
+                        output.parent.mkdir(parents=True, exist_ok=True)
+                        actual_member_uncompressed = 0
+                        with bundle.open(info) as source, output.open("xb") as sink:
+                            while chunk := source.read(CHUNK_SIZE):
+                                actual_member_uncompressed += len(chunk)
+                                total_uncompressed += len(chunk)
+                                if actual_member_uncompressed > MAX_MEMBER_UNCOMPRESSED_BYTES:
+                                    raise ValueError(
+                                        f"{archive_path.name}: actual ZIP member exceeds the uncompressed size limit: {name}"
+                                    )
+                                if actual_member_uncompressed > info.file_size:
+                                    raise ValueError(
+                                        f"{archive_path.name}: ZIP member expands beyond its declared size: {name}"
+                                    )
+                                if total_uncompressed > MAX_TOTAL_UNCOMPRESSED_BYTES:
+                                    raise ValueError(
+                                        f"{archive_path.name}: actual ZIP archive exceeds the total uncompressed size limit "
+                                        f"({MAX_TOTAL_UNCOMPRESSED_BYTES} bytes)"
+                                    )
+                                sink.write(chunk)
+                        if actual_member_uncompressed != info.file_size:
+                            raise ValueError(
+                                f"{archive_path.name}: ZIP member size does not match its declared size: {name}"
+                            )
+    
+                    if not (staging / "horizon-native.json").is_file():
+                        raise ValueError(f"{archive_path.name}: native manifest was not extracted at bundle root")
+                    if not (staging / f"mixins/{mod_id}/horizon-mixin.toml").is_file():
+                        raise ValueError(f"{archive_path.name}: mixin manifest was not extracted")
+    
+                    backup = None
+                    if target.exists():
+                        backup = destination / f".{stem}.backup-{uuid.uuid4().hex}"
+                        os.replace(target, backup)
+                    try:
+                        os.replace(staging, target)
+                    except BaseException:
+                        if backup is not None:
+                            try:
+                                os.replace(backup, target)
+                            except OSError as rollback_error:
+                                raise RuntimeError(
+                                    f"{archive_path.name}: extraction failed and the previous bundle "
+                                    f"could not be restored; it remains at {backup}"
+                                ) from rollback_error
+                        raise
                     if backup is not None:
-                        try:
-                            os.replace(backup, target)
-                        except OSError as rollback_error:
-                            raise RuntimeError(
-                                f"{archive_path.name}: extraction failed and the previous bundle "
-                                f"could not be restored; it remains at {backup}"
-                            ) from rollback_error
-                    raise
-                if backup is not None:
-                    shutil.rmtree(backup, ignore_errors=True)
-            return target
+                        shutil.rmtree(backup, ignore_errors=True)
+                return target
+            finally:
+                if created_destination and not target.exists():
+                    try:
+                        destination.rmdir()
+                    except OSError:
+                        # Another process may have populated the directory; never remove it.
+                        pass
     except (zipfile.BadZipFile, json.JSONDecodeError, UnicodeDecodeError) as error:
         raise ValueError(f"{archive_path.name}: invalid native mod archive: {error}") from error
 
