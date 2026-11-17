@@ -225,6 +225,28 @@ class NativeModExtractionTests(unittest.TestCase):
 
             self.assertFalse(destination.exists())
 
+    def test_failed_extraction_removes_new_destination(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            archive = root / "sample.hnmod"
+            self._bundle(archive)
+            destination = root / "out"
+
+            original_open = zipfile.ZipFile.open
+
+            def fail_payload(instance, name, *args, **kwargs):
+                filename = getattr(name, "filename", name)
+                if filename == "mixins/sample_mod/src/lib.rs":
+                    raise OSError("simulated member read failure")
+                return original_open(instance, name, *args, **kwargs)
+
+            with patch.object(zipfile.ZipFile, "open", fail_payload):
+                with self.assertRaisesRegex(OSError, "simulated member read failure"):
+                    extract_bundle(archive, destination)
+
+            self.assertFalse(destination.exists())
+
+
     def test_failed_replacement_preserves_existing_bundle(self):
         with tempfile.TemporaryDirectory() as temp:
             root = pathlib.Path(temp)
