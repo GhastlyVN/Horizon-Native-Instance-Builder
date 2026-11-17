@@ -14,6 +14,10 @@ REPORT = ROOT / "build-report"
 MAX_ARCHIVE_ENTRIES = 100_000
 MAX_MEMBER_UNCOMPRESSED_BYTES = 2 * 1024**3
 MAX_TOTAL_UNCOMPRESSED_BYTES = 8 * 1024**3
+MAX_PATH_UTF8_BYTES = 4096
+MAX_PATH_COMPONENTS = 64
+MAX_COMPONENT_UTF8_BYTES = 255
+MAX_COMPONENT_UTF16_UNITS = 255
 
 WINDOWS_RESERVED_NAMES = {
     "CON", "PRN", "AUX", "NUL", "CLOCK$", "CONIN$", "CONOUT$",
@@ -24,10 +28,18 @@ WINDOWS_RESERVED_NAMES = {
 
 
 def _portable_windows_component(part):
-    """Reject names that alias devices or alternate streams on Windows."""
+    """Reject names that alias devices, streams or non-portable path components."""
+    if not part:
+        return False
+    try:
+        utf8_bytes = len(part.encode("utf-8"))
+        utf16_units = len(part.encode("utf-16-le")) // 2
+    except UnicodeEncodeError:
+        return False
     stem = part.split(".", 1)[0].rstrip(" .").upper()
     return (
-        bool(part)
+        utf8_bytes <= MAX_COMPONENT_UTF8_BYTES
+        and utf16_units <= MAX_COMPONENT_UTF16_UNITS
         and not part.endswith((" ", "."))
         and not any(ord(char) < 32 or char in '<>:"|?*' for char in part)
         and stem not in WINDOWS_RESERVED_NAMES
@@ -309,6 +321,12 @@ def validate_zip_archive(z):
     for item in entries:
         raw_name = item.filename.replace(chr(92), "/")
         parts = pathlib.PurePosixPath(raw_name).parts
+        try:
+            path_utf8_bytes = len(raw_name.encode("utf-8"))
+        except UnicodeEncodeError as error:
+            raise ValueError(f"ZIP path is not valid Unicode: {item.filename}") from error
+        if path_utf8_bytes > MAX_PATH_UTF8_BYTES or len(parts) > MAX_PATH_COMPONENTS:
+            raise ValueError(f"ZIP path exceeds portable path limits: {item.filename}")
         if (not parts or raw_name.startswith("/") or chr(0) in raw_name
                 or ".." in parts or any(not _portable_windows_component(part) for part in parts)):
             raise ValueError(f"Unsafe ZIP path: {item.filename}")

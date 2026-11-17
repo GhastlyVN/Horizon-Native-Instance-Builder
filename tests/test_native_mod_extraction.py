@@ -8,6 +8,7 @@ import zipfile
 from unittest.mock import patch
 
 from scripts.extract_native_mods import MAX_MANIFEST_BYTES, extract_bundle, main
+from scripts.prepare import validate_zip
 
 
 class NativeModExtractionTests(unittest.TestCase):
@@ -21,6 +22,48 @@ class NativeModExtractionTests(unittest.TestCase):
                 '[mod]\nid = "sample_mod"\nversion = "1.0.0"\n',
             )
             archive.writestr(prefix + "mixins/sample_mod/src/lib.rs", "pub fn hook() {}\n")
+
+    def test_rejects_non_portable_component_lengths(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            for component in ("a" * 256, "😀" * 128):
+                with self.subTest(component_length=len(component)):
+                    archive = root / "component-limit.zip"
+                    with zipfile.ZipFile(archive, "w") as bundle:
+                        bundle.writestr(f"{component}/payload.bin", "x")
+                    with self.assertRaisesRegex(ValueError, "Unsafe ZIP path"):
+                        validate_zip(archive)
+
+    def test_rejects_portable_path_byte_and_depth_limits(self):
+        cases = (
+            ("path-bytes.zip", "/".join(["a" * 228] * 18)),
+            ("path-depth.zip", "/".join(["a"] * 65)),
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            for filename, member in cases:
+                with self.subTest(filename=filename):
+                    archive = root / filename
+                    with zipfile.ZipFile(archive, "w") as bundle:
+                        bundle.writestr(member, "x")
+                    with self.assertRaisesRegex(
+                        ValueError, "ZIP path exceeds portable path limits"
+                    ):
+                        validate_zip(archive)
+
+    def test_extractor_uses_the_same_portable_path_limits(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            archive = root / "sample.hnmod"
+            self._bundle(archive)
+            with zipfile.ZipFile(archive, "a") as bundle:
+                bundle.writestr("a" * 256 + "/payload.bin", "x")
+            destination = root / "out"
+
+            with self.assertRaisesRegex(ValueError, "Unsafe ZIP path"):
+                extract_bundle(archive, destination)
+
+            self.assertFalse(destination.exists())
 
     def test_extracts_root_bundle(self):
         with tempfile.TemporaryDirectory() as temp:
