@@ -6,8 +6,12 @@ import argparse
 import json
 import re
 import urllib.parse
-import urllib.request
 from pathlib import Path
+
+try:
+    from scripts.github_api import open_url
+except ModuleNotFoundError:  # direct execution: python scripts/resolve_horizon_revision.py
+    from github_api import open_url
 
 API = "https://api.github.com/repos/horizon-rust/horizon/releases/tags/"
 SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -16,14 +20,7 @@ SHA = re.compile(r"^[0-9a-f]{40}$")
 def fetch_release(ref: str = "nightly") -> dict:
     if not re.fullmatch(r"nightly(?:-\d{4}-\d{2}-\d{2})?", ref):
         raise ValueError("Horizon ref must be 'nightly' or a catalogued nightly-YYYY-MM-DD tag.")
-    request = urllib.request.Request(
-        API + urllib.parse.quote(ref, safe=""),
-        headers={
-            "Accept": "application/vnd.github+json",
-            "User-Agent": "horizon-native-instance-builder",
-        },
-    )
-    with urllib.request.urlopen(request, timeout=60) as response:
+    with open_url(API + urllib.parse.quote(ref, safe="")) as response:
         value = json.loads(response.read())
     if value.get("tag_name") != ref or not value.get("prerelease"):
         raise ValueError(f"GitHub did not return the requested Horizon Nightly release: {ref}.")

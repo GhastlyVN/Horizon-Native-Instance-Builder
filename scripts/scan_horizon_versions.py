@@ -5,8 +5,12 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import urllib.request
 from pathlib import Path
+
+try:
+    from scripts.github_api import open_url
+except ModuleNotFoundError:  # direct execution: python scripts/scan_horizon_versions.py
+    from github_api import open_url
 
 API = "https://api.github.com/repos/horizon-rust/horizon/releases?per_page=100"
 SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -15,11 +19,7 @@ ASSET = re.compile(r"^horizon-(?:linux-x86_64|windows-x64|macos-(?:arm64|x64))\.
 
 
 def fetch_releases() -> list[dict]:
-    request = urllib.request.Request(API, headers={
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "horizon-native-instance-builder",
-    })
-    with urllib.request.urlopen(request, timeout=60) as response:
+    with open_url(API) as response:
         value = json.loads(response.read())
     if not isinstance(value, list):
         raise ValueError("Horizon releases endpoint did not return a list.")

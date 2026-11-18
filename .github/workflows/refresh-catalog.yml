@@ -21,6 +21,11 @@ concurrency:
   group: refresh-horizon-catalog-main
   cancel-in-progress: false
 
+env:
+  # Authenticate GitHub API lookups; shared runner IPs otherwise hit the
+  # unauthenticated rate limit while scanning and resolving Nightlies.
+  GH_TOKEN: ${{ github.token }}
+
 jobs:
   refresh:
     runs-on: ubuntu-latest
