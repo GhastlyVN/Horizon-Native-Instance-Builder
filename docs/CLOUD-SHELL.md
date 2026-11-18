@@ -25,6 +25,19 @@ jq --version
 '
 ```
 
+On Windows, passing a script with embedded double quotes through PowerShell mangles
+it: only the text before the first inner quote arrives. Base64 the script instead,
+which has no characters the shell can touch:
+
+```powershell
+$script = @'
+echo "quoted"
+nproc
+'@
+$b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($script))
+gh workflow run cloud-shell.yml -f "script=printf %s $b64 | base64 -d | bash"
+```
+
 ## Interactive session
 
 Add `-f interactive=true` to get an SSH and web shell that stays alive after the
