@@ -1,4 +1,4 @@
-# Cloud Shell — run arbitrary commands on a GitHub-hosted runner.
+﻿# Cloud Shell â€” run arbitrary commands on a GitHub-hosted runner.
 #
 # Why this exists: this repository is public, so GitHub Actions standard
 # runners are free and unmetered here. That makes Actions a usable stand-in
@@ -56,7 +56,7 @@ jobs:
     timeout-minutes: ${{ fromJSON(inputs.timeout_minutes) }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -73,7 +73,7 @@ jobs:
 
       - name: Set up Python
         if: ${{ inputs.python_version != '' }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ inputs.python_version }}
 
@@ -90,7 +90,7 @@ jobs:
 
       - name: Upload log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cloud-shell-log
           path: cloud-shell.log
