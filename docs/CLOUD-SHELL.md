@@ -31,6 +31,12 @@ Add `-f interactive=true` to get an SSH and web shell that stays alive after the
 script finishes. The session is limited to the account that dispatched the run,
 and it ends when the job timeout expires.
 
+**Prerequisite:** the dispatching account needs at least one SSH public key on
+GitHub (Settings → SSH and GPG keys). The session is locked to that account, so
+without a key the step fails with `No public SSH keys registered`. This
+restriction is deliberate: the run log of a public repository is public, so an
+unrestricted session would let anyone connect.
+
 ```bash
 gh workflow run cloud-shell.yml -f script='echo ready' -f interactive=true
 gh run watch   # the tmate connection details are printed in the log
