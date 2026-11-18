@@ -30,7 +30,11 @@ except ModuleNotFoundError:  # direct execution: python scripts/extract_native_m
     )
 
 
-BUNDLE_STEM = re.compile(r"[a-z][a-z0-9_-]{0,63}")
+MOD_ID = re.compile(r"[a-z][a-z0-9_-]{0,63}")
+# Bundle filenames follow the registry convention <mod-id>-<version>.hnmod, so dots
+# are allowed here. The first character must be alphanumeric, which excludes ".",
+# ".." and hidden-file aliases.
+BUNDLE_STEM = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 CHUNK_SIZE = 1024 * 1024
 MAX_MANIFEST_BYTES = 1024 * 1024
 REPARSE_POINT = 0x400
@@ -67,7 +71,9 @@ def extract_bundle(archive_path: pathlib.Path, destination: pathlib.Path) -> pat
     if (
         archive_path.suffix.lower() != ".hnmod"
         or not BUNDLE_STEM.fullmatch(stem)
-        or stem.upper() in WINDOWS_RESERVED_NAMES
+        or ".." in stem
+        or stem.endswith(".")
+        or stem.split(".", 1)[0].upper() in WINDOWS_RESERVED_NAMES
     ):
         raise ValueError(f"{archive_path.name}: unsafe .hnmod filename")
 
@@ -126,7 +132,7 @@ def extract_bundle(archive_path: pathlib.Path, destination: pathlib.Path) -> pat
             if not isinstance(manifest, dict):
                 raise ValueError(f"{archive_path.name}: horizon-native.json must contain a JSON object")
             mod_id = manifest.get("id")
-            if not isinstance(mod_id, str) or not BUNDLE_STEM.fullmatch(mod_id):
+            if not isinstance(mod_id, str) or not MOD_ID.fullmatch(mod_id):
                 raise ValueError(f"{archive_path.name}: invalid or missing native mod id")
             expected_mixin = root_prefix + f"mixins/{mod_id}/horizon-mixin.toml"
             if expected_mixin not in mixins:

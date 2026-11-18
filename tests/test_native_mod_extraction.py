@@ -2,6 +2,7 @@ import io
 import json
 import os
 import pathlib
+import shutil
 import tempfile
 import unittest
 import zipfile
@@ -173,6 +174,20 @@ class NativeModExtractionTests(unittest.TestCase):
                 extract_bundle(archive, root / "out")
 
 
+    def test_accepts_registry_versioned_bundle_names(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            destination = root / "out"
+            for stem in ("appleskin-0.1.3", "mod_menu-1.0.0", "FreeCam_Plus-2.1"):
+                with self.subTest(stem=stem):
+                    archive = root / f"{stem}.hnmod"
+                    self._bundle(archive)
+                    result = extract_bundle(archive, destination)
+                    self.assertEqual(result.name, stem)
+                    self.assertTrue((result / "horizon-native.json").is_file())
+                    shutil.rmtree(result)
+                    archive.unlink()
+
     def test_rejects_unsafe_archive_stems_before_creating_destination(self):
         with tempfile.TemporaryDirectory() as temp:
             root = pathlib.Path(temp)
@@ -180,7 +195,17 @@ class NativeModExtractionTests(unittest.TestCase):
             sentinel.write_text("preserve", encoding="utf-8")
             destination = root / "out"
 
-            for filename in ("...hnmod", "con.hnmod", "nul.hnmod", "com1.hnmod"):
+            for filename in (
+                "...hnmod",
+                "..hnmod",
+                ".hnmod",
+                "con.hnmod",
+                "nul.hnmod",
+                "com1.hnmod",
+                "con.1.0.hnmod",
+                "mod..v1.hnmod",
+                "mod.v1..hnmod",
+            ):
                 with self.subTest(filename=filename):
                     archive = root / filename
                     self._bundle(archive)
