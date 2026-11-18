@@ -61,6 +61,9 @@ env:
   # GLIBC than Debian 12 / Ubuntu 22.04 provide. Keep docs/LINUX-GLIBC-BASELINE.md
   # in sync when changing this value.
   LINUX_GLIBC_BASELINE: "2.35"
+  # Authenticate GitHub API lookups; shared runner IPs otherwise hit the
+  # unauthenticated rate limit while resolving the Nightly release.
+  GH_TOKEN: ${{ github.token }}
 
 concurrency:
   group: horizon-native-${{ github.ref }}-${{ github.run_id }}

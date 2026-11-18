@@ -12,8 +12,12 @@ import shutil
 import tempfile
 import tomllib
 import urllib.parse
-import urllib.request
 import zipfile
+
+try:
+    from scripts.github_api import open_url
+except ModuleNotFoundError:  # direct execution: python scripts/download_registry_mods.py
+    from github_api import open_url
 
 INDEX_URL = "https://horizon-rust.github.io/horizon-mods/index.json"
 HEALTH_URL = "https://github.com/horizon-rust/horizon-mods/releases/download/native-health/native-health.json"
@@ -35,14 +39,11 @@ MAX_FILE_BYTES = 64 * 1024 * 1024
 
 
 def fetch_bytes(url: str, max_bytes: int = MAX_FILE_BYTES) -> bytes:
-    request = urllib.request.Request(
+    with open_url(
         url,
-        headers={
-            "User-Agent": "horizon-native-instance-builder",
-            "Accept": "application/json, application/octet-stream",
-        },
-    )
-    with urllib.request.urlopen(request, timeout=180) as response:
+        timeout=180,
+        accept="application/json, application/octet-stream",
+    ) as response:
         final = urllib.parse.urlparse(response.geturl())
         if final.scheme != "https":
             raise ValueError(f"Refusing non-HTTPS download URL: {response.geturl()}")
