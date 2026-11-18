@@ -1,0 +1,93 @@
+# Cloud Shell — run arbitrary commands on a GitHub-hosted runner.
+#
+# Why this exists: this repository is public, so GitHub Actions standard
+# runners are free and unmetered here. That makes Actions a usable stand-in
+# for a Codespace when the Codespaces quota is exhausted or local hardware is
+# too slow for a build.
+#
+# Usage:
+#   gh workflow run cloud-shell.yml -f script='./gradlew test' -f timeout_minutes=90
+#   gh run watch
+#
+# Only accounts with write access to the repository can dispatch it, so the
+# script input cannot be triggered by outside contributors.
+---
+name: Cloud Shell
+
+on:
+  workflow_dispatch:
+    inputs:
+      script:
+        description: "Bash script to execute (multi-line allowed)."
+        required: true
+        type: string
+      runner:
+        description: "Runner label to use."
+        required: false
+        default: ubuntu-22.04
+        type: string
+      timeout_minutes:
+        description: "Maximum job duration, in minutes (1-350)."
+        required: false
+        default: "60"
+        type: string
+      interactive:
+        description: "After the script, open a tmate shell and keep the job alive."
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloud-shell-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  run:
+    name: cloud shell
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ fromJSON(inputs.timeout_minutes) }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Describe runner
+        run: |
+          echo "runner=${{ inputs.runner }}"
+          uname -a
+          echo "cpus=$(nproc)"
+          free -h
+          df -h /
+          python3 -V || true
+          git log --oneline -1
+
+      - name: Run script
+        env:
+          SCRIPT: ${{ inputs.script }}
+        shell: bash
+        run: |
+          printf '%s\n' "$SCRIPT" > "$RUNNER_TEMP/cloud-shell.sh"
+          echo "----- script -----"
+          cat "$RUNNER_TEMP/cloud-shell.sh"
+          echo "----- output -----"
+          bash "$RUNNER_TEMP/cloud-shell.sh" 2>&1 | tee cloud-shell.log
+
+      - name: Upload log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-shell-log
+          path: cloud-shell.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Interactive shell (tmate)
+        if: ${{ inputs.interactive && always() }}
+        uses: mxschmitt/action-tmate@v3
+        with:
+          limit-access-to-actor: true
