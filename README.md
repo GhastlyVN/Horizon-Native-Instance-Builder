@@ -99,6 +99,8 @@ The instance directory itself is a direct drop-in. The separate import and pin c
 
 Copy the extracted `instances/horizon-native-<commit7>` folder into `GAME_HOME/instances/`, then run the equivalent commands using `native-build/linux-x86_64/horizon-client`.
 
+The Linux client is built on Ubuntu 22.04 and targets **GLIBC 2.35** or newer. CI rejects any artifact that needs a newer GLIBC symbol version and smoke-tests the binary in an `ubuntu:22.04` container; see [docs/LINUX-GLIBC-BASELINE.md](docs/LINUX-GLIBC-BASELINE.md) for the tested matrix. Distributions older than GLIBC 2.35 (Debian 11, Ubuntu 20.04) are not supported.
+
 ## Security and limits
 
 Native mods are Rust code, not sandboxed scripts; they run with the permissions of the user who launches Horizon. Registry review and SHA-256 checks establish provenance and integrity, not harmlessness. Only import builds and mods you trust.

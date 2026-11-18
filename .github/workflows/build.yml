@@ -56,6 +56,12 @@ on:
 permissions:
   contents: read
 
+env:
+  # Linux artifacts are built on Ubuntu 22.04 and must not require a newer
+  # GLIBC than Debian 12 / Ubuntu 22.04 provide. Keep docs/LINUX-GLIBC-BASELINE.md
+  # in sync when changing this value.
+  LINUX_GLIBC_BASELINE: "2.35"
+
 concurrency:
   group: horizon-native-${{ github.ref }}-${{ github.run_id }}
   cancel-in-progress: false
@@ -150,7 +156,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-latest
+          # Pinned to Ubuntu 22.04 (GLIBC 2.35) instead of ubuntu-latest so the
+          # Linux artifact does not inherit the newest hosted-runner GLIBC.
+          - runner: ubuntu-22.04
             target: linux-x86_64
             client: horizon-client
           - runner: windows-latest
@@ -199,7 +207,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: horizon-src -> target
-          shared-key: horizon-${{ runner.os }}-${{ env.HORIZON_COMMIT }}
+          shared-key: horizon-${{ runner.os }}-${{ matrix.runner }}-${{ env.HORIZON_COMMIT }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Read Minecraft version pinned by Horizon
         shell: bash
@@ -354,6 +362,9 @@ jobs:
             fi
           fi
           printf 'Horizon commit: %s\nMinecraft version: %s\nTarget: %s\nRunner: %s\nOptional native mods: %s\nBuild mode: %s\nNative version: %s\n' "$HORIZON_COMMIT" "$MINECRAFT_VERSION" "$TARGET" "$RUNNER_OS" "${NATIVE_MOD_RESULT:-unknown}" "$BUILD_MODE" "$NATIVE_VERSION" > "build-report/$TARGET/build.txt"
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            printf 'GLIBC baseline: %s\n' "$LINUX_GLIBC_BASELINE" >> "build-report/$TARGET/build.txt"
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -393,6 +404,29 @@ jobs:
             --linux verified/native-build-linux-x86_64 \
             --windows verified/native-build-windows-x86_64 \
             --output build-report/native-build-verification.json
+      - name: Enforce the documented GLIBC baseline on the Linux artifact
+        run: |
+          python scripts/verify_glibc_baseline.py \
+            --binary verified/native-build-linux-x86_64/native-runtime/horizon-client \
+            --max-glibc "$LINUX_GLIBC_BASELINE" \
+            --output build-report/linux-glibc-baseline.json
+      - name: Smoke-test the Linux artifact on the oldest supported image
+        run: |
+          docker run --rm \
+            -v "$PWD/verified/native-build-linux-x86_64/native-runtime:/runtime:ro" \
+            ubuntu:22.04 bash -c '
+              set -euo pipefail
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -qq
+              apt-get install -y -qq --no-install-recommends \
+                libx11-6 libxkbcommon0 libwayland-client0 libvulkan1 \
+                libasound2 libfontconfig1 libudev1 libssl3 libgl1 >/dev/null
+              ldd /runtime/horizon-client
+              if ldd /runtime/horizon-client | grep -q "not found"; then
+                echo "::error::Linux artifact has unresolved shared libraries on Ubuntu 22.04"
+                exit 1
+              fi
+            '
       - name: Package Windows and Linux instance bundles
         run: |
           python scripts/package_instance.py --instance verified/inputs/input/instance/instance.zip --binary verified/native-build-windows-x86_64/native-runtime/horizon-client.exe --mods verified/inputs/input/mods-latest --target windows-x86_64 --horizon-commit "$(cat verified/inputs/build-report/horizon-commit.txt)" --output dist/horizon-instance-windows-x86_64.zip
@@ -415,7 +449,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: native-build-verification
-          path: build-report/native-build-verification.json
+          path: |
+            build-report/native-build-verification.json
+            build-report/linux-glibc-baseline.json
           if-no-files-found: error
           retention-days: 30
 
