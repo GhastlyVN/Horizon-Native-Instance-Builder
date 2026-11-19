@@ -238,9 +238,10 @@ def extract_safe(archive: pathlib.Path, destination: pathlib.Path) -> pathlib.Pa
                         f"Case-insensitive ZIP directory prefix collision: {info.filename}"
                     )
                 prefix_spellings[folded_prefix] = prefix
-            if not is_directory and any(
-                existing.startswith(folded + "/") for existing in seen_casefold
-            ):
+            # Prior entries register every directory prefix in prefix_spellings.
+            # A file cannot replace a path already used by a descendant; O(1) lookup
+            # avoids a quadratic scan for archives with many sibling files.
+            if not is_directory and folded in prefix_spellings:
                 raise SystemExit(
                     f"ZIP file/directory path collision: {info.filename} replaces a directory"
                 )

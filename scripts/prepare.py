@@ -363,9 +363,10 @@ def validate_zip_archive(z):
                     f"Case-insensitive ZIP directory prefix collision: {item.filename}"
                 )
             prefix_spellings[folded_prefix] = prefix
-        if not is_directory and any(
-            existing.startswith(folded + "/") for existing in seen_casefold
-        ):
+        # Prior entries register every directory prefix in prefix_spellings.
+        # A file cannot replace a path already used by a descendant; O(1) lookup
+        # avoids a quadratic scan for archives with many sibling files.
+        if not is_directory and folded in prefix_spellings:
             raise ValueError(
                 f"ZIP file/directory path collision: {item.filename} replaces a directory"
             )
