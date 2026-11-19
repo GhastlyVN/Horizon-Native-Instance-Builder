@@ -177,10 +177,13 @@ def _open_bounded_zip(archive):
                 f"({MAX_ARCHIVE_BYTES} bytes)"
             )
         try:
-            with zipfile.ZipFile(stream) as zf:
-                yield zf
+            zf = zipfile.ZipFile(stream)
         except zipfile.BadZipFile as error:
             raise SystemExit(f"Not a ZIP archive: {archive}") from error
+        # Keep parse-time error conversion separate from extraction. A BadZipFile
+        # raised while streaming a member must reach extract_safe's rollback path.
+        with zf:
+            yield zf
 
 
 def extract_safe(archive: pathlib.Path, destination: pathlib.Path) -> pathlib.Path:

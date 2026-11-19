@@ -41,6 +41,26 @@ class InspectInputsTests(unittest.TestCase):
                 inspect_inputs._hash_stream_bounded(stream)
         self.assertEqual(stream.bytes_read, 5)
 
+    def test_windows_file_identity_uses_creation_time_semantics(self):
+        from types import SimpleNamespace
+
+        before = SimpleNamespace(
+            st_dev=1, st_ino=2, st_size=3, st_mtime_ns=4, st_ctime_ns=5
+        )
+        after = SimpleNamespace(
+            st_dev=1, st_ino=2, st_size=3, st_mtime_ns=4, st_ctime_ns=99
+        )
+        with patch.object(inspect_inputs.sys, "platform", "win32"):
+            self.assertEqual(
+                inspect_inputs._file_identity(before),
+                inspect_inputs._file_identity(after),
+            )
+        with patch.object(inspect_inputs.sys, "platform", "linux"):
+            self.assertNotEqual(
+                inspect_inputs._file_identity(before),
+                inspect_inputs._file_identity(after),
+            )
+
     def test_instance_inspection_uses_shared_preflight_before_crc_scan(self):
         with tempfile.TemporaryDirectory() as directory:
             archive = pathlib.Path(directory) / "unsafe.zip"

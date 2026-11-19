@@ -8,6 +8,9 @@ import stat
 import unicodedata
 import zipfile
 
+# Preserve the real class when tests replace ZipFile with a guard factory.
+_ZIP_FILE_TYPE = zipfile.ZipFile
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_INSTANCE = ROOT / "input/instance/instance.zip"
 DEFAULT_MINECRAFT = ROOT / "input/minecraft/minecraft.zip"
@@ -407,7 +410,7 @@ def validate_zip_archive(z):
 
 
 def validate_zip(path):
-    if isinstance(path, zipfile.ZipFile):
+    if isinstance(path, _ZIP_FILE_TYPE):
         return validate_zip_archive(path)
     path = pathlib.Path(path)
     if not path.is_file():

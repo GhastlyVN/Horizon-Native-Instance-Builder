@@ -36,14 +36,18 @@ if str(ROOT) not in sys.path:
 from scripts.prepare import validate_zip_archive  # noqa: E402
 
 
-def _file_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int]:
-    return (
+def _file_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    # Windows st_ctime is a creation timestamp, not POSIX metadata-change time.
+    # File identity, size and mtime are the portable signals for content mutation.
+    identity = (
         metadata.st_dev,
         metadata.st_ino,
         metadata.st_size,
         metadata.st_mtime_ns,
-        metadata.st_ctime_ns,
     )
+    if sys.platform == "win32":
+        return identity
+    return (*identity, metadata.st_ctime_ns)
 
 
 def _hash_stream_bounded(stream) -> str:
