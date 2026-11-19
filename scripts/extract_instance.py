@@ -25,6 +25,8 @@ WINDOWS_RESERVED_NAMES = {
 
 def _portable_windows_component(part):
     """Match prepare.py's portable component limits and Windows alias checks."""
+    if not part:
+        return False
     try:
         utf8_bytes = len(part.encode("utf-8"))
         utf16_units = len(part.encode("utf-16-le")) // 2
@@ -32,8 +34,7 @@ def _portable_windows_component(part):
         return False
     stem = part.split(".", 1)[0].rstrip(" .").upper()
     return (
-        bool(part)
-        and utf8_bytes <= MAX_COMPONENT_UTF8_BYTES
+        utf8_bytes <= MAX_COMPONENT_UTF8_BYTES
         and utf16_units <= MAX_COMPONENT_UTF16_UNITS
         and not part.endswith((" ", "."))
         and not any(ord(char) < 32 or char in '<>:"|?*' for char in part)
