@@ -410,6 +410,30 @@ class InstanceArchiveTests(unittest.TestCase):
                 with self.assertRaisesRegex(SystemExit, message):
                     extract_safe(archive, root / "out")
 
+    def test_preflight_and_extractor_reject_oversized_compressed_archives_before_parsing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            archive = root / "oversized.zip"
+            with zipfile.ZipFile(archive, "w") as zf:
+                zf.writestr("payload.bin", b"small")
+
+            with patch("scripts.prepare.MAX_ARCHIVE_BYTES", 1):
+                with patch(
+                    "scripts.prepare.zipfile.ZipFile",
+                    side_effect=AssertionError("preflight parsed an oversized archive"),
+                ):
+                    with self.assertRaisesRegex(ValueError, "compressed size limit"):
+                        validate_zip(archive)
+
+            with patch("scripts.extract_instance.MAX_ARCHIVE_BYTES", 1):
+                with patch(
+                    "scripts.extract_instance.zipfile.ZipFile",
+                    side_effect=AssertionError("extractor parsed an oversized archive"),
+                ):
+                    with self.assertRaisesRegex(SystemExit, "compressed size limit"):
+                        extract_safe(archive, root / "out")
+            self.assertFalse((root / "out").exists())
+
     def test_preflight_rejects_too_many_zip_entries(self):
         with tempfile.TemporaryDirectory() as temp:
             archive = pathlib.Path(temp) / "many.zip"

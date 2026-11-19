@@ -2,7 +2,9 @@
 import argparse
 import hashlib
 import json
+import os
 import pathlib
+import stat
 import unicodedata
 import zipfile
 
@@ -11,6 +13,7 @@ DEFAULT_INSTANCE = ROOT / "input/instance/instance.zip"
 DEFAULT_MINECRAFT = ROOT / "input/minecraft/minecraft.zip"
 DEFAULT_MODS = ROOT / "input/mods"
 REPORT = ROOT / "build-report"
+MAX_ARCHIVE_BYTES = 9 * 1024**3
 MAX_ARCHIVE_ENTRIES = 100_000
 MAX_MEMBER_UNCOMPRESSED_BYTES = 2 * 1024**3
 MAX_TOTAL_UNCOMPRESSED_BYTES = 8 * 1024**3
@@ -288,6 +291,21 @@ def validate_minecraft_archive(path, names):
 
 def validate_zip_archive(z):
     """Validate an already-open ZIP so callers can preflight and consume the same bytes."""
+    # Enforce the compressed-size bound for file-backed ZIPs supplied directly.
+    stream = getattr(z, "fp", None)
+    if stream is not None:
+        try:
+            metadata = os.fstat(stream.fileno())
+        except (AttributeError, OSError):
+            metadata = None
+        if metadata is not None:
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ValueError("ZIP archive is not a regular file")
+            if metadata.st_size > MAX_ARCHIVE_BYTES:
+                raise ValueError(
+                    "ZIP archive exceeds the compressed size limit "
+                    f"({MAX_ARCHIVE_BYTES} bytes)"
+                )
     entries = z.infolist()
     if not entries:
         raise ValueError(f"Empty ZIP archive: {getattr(z, 'filename', '<open ZIP>')}")
@@ -391,10 +409,30 @@ def validate_zip_archive(z):
 def validate_zip(path):
     if isinstance(path, zipfile.ZipFile):
         return validate_zip_archive(path)
-    if not zipfile.is_zipfile(path):
+    path = pathlib.Path(path)
+    if not path.is_file():
         raise ValueError(f"Not a ZIP archive: {path}")
-    with zipfile.ZipFile(path) as z:
-        return validate_zip_archive(z)
+    # Open once and inspect the descriptor before ZipFile reads the central directory.
+    # O_NONBLOCK prevents a replaced FIFO from hanging the preflight on POSIX.
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise ValueError(f"Could not open ZIP archive {path}: {error}") from error
+    with os.fdopen(descriptor, "rb") as stream:
+        metadata = os.fstat(stream.fileno())
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError(f"ZIP archive is not a regular file: {path}")
+        if metadata.st_size > MAX_ARCHIVE_BYTES:
+            raise ValueError(
+                "ZIP archive exceeds the compressed size limit "
+                f"({MAX_ARCHIVE_BYTES} bytes)"
+            )
+        try:
+            with zipfile.ZipFile(stream) as z:
+                return validate_zip_archive(z)
+        except zipfile.BadZipFile as error:
+            raise ValueError(f"Not a ZIP archive: {path}") from error
 
 def main():
     ap = argparse.ArgumentParser()

@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Safely unpack a Minecraft game folder from the supplied instance ZIP."""
 import argparse
+import contextlib
+import os
 import pathlib
 import stat
 import unicodedata
 import zipfile
 
+MAX_ARCHIVE_BYTES = 9 * 1024**3
 MAX_ARCHIVE_ENTRIES = 100_000
 MAX_MEMBER_UNCOMPRESSED_BYTES = 2 * 1024**3
 MAX_TOTAL_UNCOMPRESSED_BYTES = 8 * 1024**3
@@ -153,6 +156,33 @@ def _validate_existing_destination_collisions(root, validated_entries):
                 )
 
 
+@contextlib.contextmanager
+def _open_bounded_zip(archive):
+    """Open one regular archive after bounding its compressed size, before ZIP parsing."""
+    archive = pathlib.Path(archive)
+    if not archive.is_file():
+        raise SystemExit(f"Not a ZIP archive: {archive}")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(archive, flags)
+    except OSError as error:
+        raise SystemExit(f"Could not open ZIP archive {archive}: {error}") from error
+    with os.fdopen(descriptor, "rb") as stream:
+        metadata = os.fstat(stream.fileno())
+        if not stat.S_ISREG(metadata.st_mode):
+            raise SystemExit(f"ZIP archive is not a regular file: {archive}")
+        if metadata.st_size > MAX_ARCHIVE_BYTES:
+            raise SystemExit(
+                "ZIP archive exceeds the compressed size limit "
+                f"({MAX_ARCHIVE_BYTES} bytes)"
+            )
+        try:
+            with zipfile.ZipFile(stream) as zf:
+                yield zf
+        except zipfile.BadZipFile as error:
+            raise SystemExit(f"Not a ZIP archive: {archive}") from error
+
+
 def extract_safe(archive: pathlib.Path, destination: pathlib.Path) -> pathlib.Path:
     # Path.is_symlink() misses Windows junctions. Reject reparse points before resolve()
     # can silently redirect the caller-selected destination.
@@ -171,7 +201,7 @@ def extract_safe(archive: pathlib.Path, destination: pathlib.Path) -> pathlib.Pa
 
     # Validate the complete archive before writing anything. This prevents a late malicious
     # entry from leaving a partially extracted tree behind.
-    with zipfile.ZipFile(archive) as zf:
+    with _open_bounded_zip(archive) as zf:
         entries = zf.infolist()
         if not entries:
             raise SystemExit("Empty ZIP archive")
