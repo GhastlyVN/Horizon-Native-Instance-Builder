@@ -26,14 +26,14 @@ from scripts.extract_instance import (
 
 class InstanceArchiveTests(unittest.TestCase):
     def test_extractor_and_validator_share_portable_component_policy(self):
-        for component in ("", "safe", "CON", "trailing.", "\\ud800"):
+        for component in ("", "safe", "CON", "trailing.", "\ud800"):
             with self.subTest(component=repr(component)):
                 self.assertEqual(
                     prepare_portable_windows_component(component),
                     extract_portable_windows_component(component),
                 )
-        self.assertFalse(prepare_portable_windows_component("\\ud800"))
-        self.assertFalse(extract_portable_windows_component("\\ud800"))
+        self.assertFalse(prepare_portable_windows_component("\ud800"))
+        self.assertFalse(extract_portable_windows_component("\ud800"))
 
     def test_discovers_nested_minecraft_game_root(self):
         names = [
