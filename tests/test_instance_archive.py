@@ -10,11 +10,31 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-from scripts.prepare import discover_minecraft_root, validate_minecraft_archive, validate_minecraft_layout, validate_zip
-from scripts.extract_instance import extract_safe, _metadata_is_link_or_reparse_point
+from scripts.prepare import (
+    _portable_windows_component as prepare_portable_windows_component,
+    discover_minecraft_root,
+    validate_minecraft_archive,
+    validate_minecraft_layout,
+    validate_zip,
+)
+from scripts.extract_instance import (
+    _metadata_is_link_or_reparse_point,
+    _portable_windows_component as extract_portable_windows_component,
+    extract_safe,
+)
 
 
 class InstanceArchiveTests(unittest.TestCase):
+    def test_extractor_and_validator_share_portable_component_policy(self):
+        for component in ("", "safe", "CON", "trailing.", "\\ud800"):
+            with self.subTest(component=repr(component)):
+                self.assertEqual(
+                    prepare_portable_windows_component(component),
+                    extract_portable_windows_component(component),
+                )
+        self.assertFalse(prepare_portable_windows_component("\\ud800"))
+        self.assertFalse(extract_portable_windows_component("\\ud800"))
+
     def test_discovers_nested_minecraft_game_root(self):
         names = [
             "export/.minecraft/versions/26.3/26.3.json",
