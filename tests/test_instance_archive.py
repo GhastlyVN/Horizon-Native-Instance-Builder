@@ -439,6 +439,28 @@ class InstanceArchiveTests(unittest.TestCase):
                 with self.assertRaisesRegex(SystemExit, "too many entries"):
                     extract_safe(archive, root / "out")
 
+    def test_preflight_and_extractor_share_portable_path_limits(self):
+        cases = (
+            ("component-utf8", f"{'a' * 256}/payload.bin", "Unsafe ZIP path"),
+            ("component-utf16", f"{'😀' * 128}/payload.bin", "Unsafe ZIP path"),
+            ("path-bytes", "/".join(["a" * 228] * 18), "ZIP path exceeds portable path limits"),
+            ("path-depth", "/".join(["a"] * 65), "ZIP path exceeds portable path limits"),
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            for name, member, message in cases:
+                with self.subTest(name=name):
+                    archive = root / f"{name}.zip"
+                    destination = root / f"out-{name}"
+                    with zipfile.ZipFile(archive, "w") as zf:
+                        zf.writestr(member, b"payload")
+
+                    with self.assertRaisesRegex(ValueError, message):
+                        validate_zip(archive)
+                    with self.assertRaisesRegex(SystemExit, message):
+                        extract_safe(archive, destination)
+                    self.assertFalse(destination.exists())
+
     def test_extractor_preflights_all_entries_before_writing(self):
         with tempfile.TemporaryDirectory() as temp:
             root = pathlib.Path(temp)

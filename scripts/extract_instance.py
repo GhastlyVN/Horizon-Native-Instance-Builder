@@ -9,6 +9,11 @@ import zipfile
 MAX_ARCHIVE_ENTRIES = 100_000
 MAX_MEMBER_UNCOMPRESSED_BYTES = 2 * 1024**3
 MAX_TOTAL_UNCOMPRESSED_BYTES = 8 * 1024**3
+# Keep direct extraction's path policy identical to prepare.validate_zip_archive.
+MAX_PATH_UTF8_BYTES = 4096
+MAX_PATH_COMPONENTS = 64
+MAX_COMPONENT_UTF8_BYTES = 255
+MAX_COMPONENT_UTF16_UNITS = 255
 
 WINDOWS_RESERVED_NAMES = {
     "CON", "PRN", "AUX", "NUL", "CLOCK$", "CONIN$", "CONOUT$",
@@ -19,10 +24,17 @@ WINDOWS_RESERVED_NAMES = {
 
 
 def _portable_windows_component(part):
-    """Reject names that alias devices or alternate streams on Windows."""
+    """Match prepare.py's portable component limits and Windows alias checks."""
+    try:
+        utf8_bytes = len(part.encode("utf-8"))
+        utf16_units = len(part.encode("utf-16-le")) // 2
+    except UnicodeEncodeError:
+        return False
     stem = part.split(".", 1)[0].rstrip(" .").upper()
     return (
         bool(part)
+        and utf8_bytes <= MAX_COMPONENT_UTF8_BYTES
+        and utf16_units <= MAX_COMPONENT_UTF16_UNITS
         and not part.endswith((" ", "."))
         and not any(ord(char) < 32 or char in '<>:"|?*' for char in part)
         and stem not in WINDOWS_RESERVED_NAMES
@@ -185,6 +197,12 @@ def extract_safe(archive: pathlib.Path, destination: pathlib.Path) -> pathlib.Pa
                         f"({MAX_TOTAL_UNCOMPRESSED_BYTES} bytes)"
                     )
             path = pathlib.PurePosixPath(raw_name)
+            try:
+                path_utf8_bytes = len(raw_name.encode("utf-8"))
+            except UnicodeEncodeError as error:
+                raise SystemExit(f"ZIP path is not valid Unicode: {info.filename}") from error
+            if path_utf8_bytes > MAX_PATH_UTF8_BYTES or len(path.parts) > MAX_PATH_COMPONENTS:
+                raise SystemExit(f"ZIP path exceeds portable path limits: {info.filename}")
             if (
                 not path.parts
                 or raw_name.startswith("/")
