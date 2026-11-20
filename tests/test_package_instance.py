@@ -171,7 +171,7 @@ class PackageInstanceTests(unittest.TestCase):
             binary.write_bytes(b"test executable")
             mods = root / "mods"
             mods.mkdir()
-            with self.assertRaisesRegex(ValueError, "Unsafe instance ZIP entry"):
+            with self.assertRaisesRegex(ValueError, "Unsafe ZIP path"):
                 package(instance, binary, mods, "windows-x86_64",
                         "b" * 40, root / "bundle.zip")
 
