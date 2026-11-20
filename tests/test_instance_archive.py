@@ -379,6 +379,25 @@ class InstanceArchiveTests(unittest.TestCase):
                 extract_safe(archive, destination)
             self.assertFalse(destination.exists())
 
+    def test_extractor_detects_archive_mutation_and_rolls_back(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            archive = root / "changing.zip"
+            destination = root / "out"
+            with zipfile.ZipFile(archive, "w") as zf:
+                zf.writestr("game/versions/1/1.json", "{}")
+
+            def mutate_before_return(extracted_root, _archive_files):
+                metadata = archive.stat()
+                os.utime(archive, ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 2_000_000_000))
+                return extracted_root / "game"
+
+            with patch("scripts.extract_instance.find_minecraft_root", side_effect=mutate_before_return):
+                with self.assertRaisesRegex(SystemExit, "ZIP archive changed during extraction"):
+                    extract_safe(archive, destination)
+
+            self.assertFalse(destination.exists())
+            self.assertTrue(archive.exists())
     def test_rejects_symlink_entries(self):
         with tempfile.TemporaryDirectory() as temp:
             archive = pathlib.Path(temp) / "link.zip"

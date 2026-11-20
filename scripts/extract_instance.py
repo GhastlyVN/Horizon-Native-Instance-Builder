@@ -186,6 +186,14 @@ def _open_bounded_zip(archive):
             yield zf
 
 
+def _file_identity(metadata):
+    """Identity tuple used to detect in-place archive mutation during extraction."""
+    identity = (metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns)
+    if os.name != "nt":
+        return (*identity, metadata.st_ctime_ns)
+    return identity
+
+
 def extract_safe(archive: pathlib.Path, destination: pathlib.Path) -> pathlib.Path:
     # Path.is_symlink() misses Windows junctions. Reject reparse points before resolve()
     # can silently redirect the caller-selected destination.
@@ -205,6 +213,7 @@ def extract_safe(archive: pathlib.Path, destination: pathlib.Path) -> pathlib.Pa
     # Validate the complete archive before writing anything. This prevents a late malicious
     # entry from leaving a partially extracted tree behind.
     with _open_bounded_zip(archive) as zf:
+        archive_identity = _file_identity(os.fstat(zf.fp.fileno()))
         entries = zf.infolist()
         if not entries:
             raise SystemExit("Empty ZIP archive")
@@ -365,7 +374,10 @@ def extract_safe(archive: pathlib.Path, destination: pathlib.Path) -> pathlib.Pa
                     )
 
             archive_files = [path.as_posix() for _, path, is_directory in validated_entries if not is_directory]
-            return find_minecraft_root(root, archive_files)
+            game_root = find_minecraft_root(root, archive_files)
+            if _file_identity(os.fstat(zf.fp.fileno())) != archive_identity:
+                raise SystemExit(f"ZIP archive changed during extraction: {archive}")
+            return game_root
         except BaseException:
             # Extraction is exclusive: only remove files and directories created by this
             # invocation, never pre-existing destination content.
