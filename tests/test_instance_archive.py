@@ -576,7 +576,7 @@ class InstanceArchiveTests(unittest.TestCase):
             original_mkdir = pathlib.Path.mkdir
 
             def fail_after_creating_parents(path, *args, **kwargs):
-                if path == destination:
+                if path.resolve(strict=False) == destination.resolve(strict=False):
                     original_mkdir(path.parent, parents=True, exist_ok=True)
                     raise OSError("simulated destination mkdir failure")
                 return original_mkdir(path, *args, **kwargs)
@@ -604,11 +604,11 @@ class InstanceArchiveTests(unittest.TestCase):
             raced = [False]
 
             def create_foreign_parent(path, *args, **kwargs):
-                if path == destination and not raced[0]:
+                if path.resolve(strict=False) == destination.resolve(strict=False) and not raced[0]:
                     original_mkdir(foreign_parent)
                     raced[0] = True
                     return original_mkdir(path, *args, **kwargs)
-                if path == foreign_parent and not raced[0]:
+                if path.resolve(strict=False) == foreign_parent.resolve(strict=False) and not raced[0]:
                     original_mkdir(path)
                     raced[0] = True
                     raise FileExistsError(path)
