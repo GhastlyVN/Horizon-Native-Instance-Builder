@@ -1,10 +1,14 @@
+import hashlib
+import json
 import os
+import stat
 import tempfile
 import unittest
 import zipfile
 from unittest.mock import patch
 from pathlib import Path
 
+from scripts import package_instance
 from scripts.package_instance import package
 
 
@@ -47,6 +51,15 @@ class PackageInstanceTests(unittest.TestCase):
                     b"native mod bundle",
                 )
                 self.assertNotIn("instance/instance.zip", archive.namelist())
+                manifest = json.loads(archive.read("build-manifest.json"))
+                self.assertEqual(
+                    manifest["native_client"]["sha256"],
+                    hashlib.sha256(binary.read_bytes()).hexdigest(),
+                )
+                self.assertEqual(
+                    manifest["mods"][0]["sha256"],
+                    hashlib.sha256((mods / "example.hnmod").read_bytes()).hexdigest(),
+                )
                 self.assertIsNone(archive.testzip())
 
     def _inputs(self, root: Path):
@@ -60,6 +73,95 @@ class PackageInstanceTests(unittest.TestCase):
         mod = mods / "example.hnmod"
         mod.write_bytes(b"native mod bundle")
         return instance, binary, mods, mod
+
+    @unittest.skipIf(os.name == "nt", "open-file rename semantics differ on Windows")
+    def test_package_uses_open_instance_snapshot_after_source_path_replacement(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            instance, binary, mods, _ = self._inputs(root)
+            original_archive = instance.read_bytes()
+            replacement = root / "replacement.zip"
+            with zipfile.ZipFile(replacement, "w") as archive:
+                archive.writestr("saves/world/level.dat", b"replacement world")
+            replacement_bytes = replacement.read_bytes()
+            output = root / "bundle.zip"
+            real_copy = package_instance._copy_zip_member_to_zip
+            replaced = False
+
+            def replace_path_before_copy(archive, arcname, source, info):
+                nonlocal replaced
+                if not replaced:
+                    os.replace(replacement, instance)
+                    replaced = True
+                return real_copy(archive, arcname, source, info)
+
+            with patch.object(
+                package_instance, "_copy_zip_member_to_zip",
+                side_effect=replace_path_before_copy,
+            ):
+                result = package(instance, binary, mods, "windows-x86_64",
+                                 "1" * 40, output)
+
+            with zipfile.ZipFile(output) as archive:
+                self.assertEqual(
+                    archive.read("instances/horizon-native-1111111/saves/world/level.dat"),
+                    b"world",
+                )
+            self.assertEqual(
+                result["instance"]["source_archive_sha256"],
+                hashlib.sha256(original_archive).hexdigest(),
+            )
+            self.assertEqual(instance.read_bytes(), replacement_bytes)
+
+    @unittest.skipIf(os.name == "nt", "open-file rename semantics differ on Windows")
+    def test_package_hashes_the_same_open_binary_snapshot_it_writes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            instance, binary, mods, _ = self._inputs(root)
+            original_binary = binary.read_bytes()
+            replacement = root / "replacement.exe"
+            replacement.write_bytes(b"replacement executable")
+            replacement_bytes = replacement.read_bytes()
+            output = root / "bundle.zip"
+            real_copy = package_instance._copy_stream_to_zip
+            replaced = False
+
+            def replace_path_before_copy(archive, arcname, stream, metadata):
+                nonlocal replaced
+                if arcname == "native-build/windows-x86_64/horizon-client.exe" and not replaced:
+                    os.replace(replacement, binary)
+                    replaced = True
+                return real_copy(archive, arcname, stream, metadata)
+
+            with patch.object(
+                package_instance, "_copy_stream_to_zip",
+                side_effect=replace_path_before_copy,
+            ):
+                result = package(instance, binary, mods, "windows-x86_64",
+                                 "2" * 40, output)
+
+            with zipfile.ZipFile(output) as archive:
+                packaged_binary = archive.read("native-build/windows-x86_64/horizon-client.exe")
+            self.assertEqual(packaged_binary, original_binary)
+            self.assertEqual(
+                result["native_client"]["sha256"],
+                hashlib.sha256(original_binary).hexdigest(),
+            )
+            self.assertEqual(binary.read_bytes(), replacement_bytes)
+
+    @unittest.skipIf(os.name == "nt", "POSIX permission bits are not portable to Windows")
+    def test_atomic_replacement_preserves_existing_output_permissions(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            instance, binary, mods, _ = self._inputs(root)
+            output = root / "bundle.zip"
+            output.write_bytes(b"previous package")
+            output.chmod(0o640)
+
+            package(instance, binary, mods, "windows-x86_64",
+                    "3" * 40, output)
+
+            self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o640)
 
     def test_package_output_cannot_overwrite_any_source_input(self):
         with tempfile.TemporaryDirectory() as temp:
