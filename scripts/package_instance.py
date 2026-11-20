@@ -18,12 +18,11 @@ else:  # Executed as `python scripts/package_instance.py`.
 
 
 def _file_identity(metadata):
-    identity = (
+    # ctime changes when an opened source is atomically renamed away from its path,
+    # even though the descriptor still refers to the same immutable bytes.
+    return (
         metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns
     )
-    if os.name != "nt":
-        return (*identity, metadata.st_ctime_ns)
-    return identity
 
 
 def _sha256_stream(stream) -> str:
