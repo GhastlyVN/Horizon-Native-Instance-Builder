@@ -307,28 +307,63 @@ def extract_safe(archive: pathlib.Path, destination: pathlib.Path) -> pathlib.Pa
             validated_entries.append((info, path, is_directory))
 
         # Only create the output directory after every archive entry has passed preflight.
-        destination_missing = []
-        current = destination.absolute()
-        while current != current.parent and not current.exists():
-            destination_missing.append(current)
-            current = current.parent
         created_files = []
-        created_directories = list(reversed(destination_missing))
+        created_directories = []
+
+        def ensure_directory(path, *, stop=None):
+            path = pathlib.Path(path).absolute()
+            stop = pathlib.Path(stop).absolute() if stop is not None else None
+            if stop is not None and not path.is_relative_to(stop):
+                raise SystemExit(f"Extraction path escapes destination root: {path}")
+
+            missing = []
+            current = path
+            while True:
+                try:
+                    metadata = current.lstat()
+                except FileNotFoundError:
+                    missing.append(current)
+                else:
+                    if _metadata_is_link_or_reparse_point(metadata):
+                        raise SystemExit(
+                            f"Existing symlink or reparse point in extraction path refused: {current}"
+                        )
+                    if not stat.S_ISDIR(metadata.st_mode):
+                        raise SystemExit(f"Extraction path component is not a directory: {current}")
+                    break
+
+                if stop is not None and current == stop:
+                    break
+                parent = current.parent
+                if parent == current:
+                    break
+                current = parent
+
+            for directory in reversed(missing):
+                try:
+                    directory.mkdir()
+                except FileExistsError:
+                    # A concurrent creator won the race. Validate its directory,
+                    # but never register it for this invocation's rollback.
+                    metadata = directory.lstat()
+                    if (
+                        _metadata_is_link_or_reparse_point(metadata)
+                        or not stat.S_ISDIR(metadata.st_mode)
+                    ):
+                        raise SystemExit(
+                            f"Unsafe concurrent extraction directory: {directory}"
+                        )
+                else:
+                    created_directories.append(directory)
 
         try:
-            # Include destination creation in the rollback scope: mkdir(parents=True)
-            # can create some ancestors before failing on a later component.
-            destination.mkdir(parents=True, exist_ok=True)
+            # Create components one at a time so rollback owns only successful mkdir calls.
+            ensure_directory(destination)
+            if _is_link_or_reparse_point(destination):
+                raise SystemExit(
+                    f"symlink extraction destination refused (including Windows reparse points): {destination}"
+                )
             root = destination.resolve()
-
-            def ensure_directory(path):
-                missing = []
-                current = path
-                while current != root and not current.exists():
-                    missing.append(current)
-                    current = current.parent
-                path.mkdir(parents=True, exist_ok=True)
-                created_directories.extend(reversed(missing))
 
             _validate_existing_destination_collisions(root, validated_entries)
             actual_total_uncompressed = 0
@@ -344,9 +379,9 @@ def extract_safe(archive: pathlib.Path, destination: pathlib.Path) -> pathlib.Pa
                             f"Existing symlink or reparse point in extraction path refused: {current}"
                         )
                 if is_directory:
-                    ensure_directory(target)
+                    ensure_directory(target, stop=root)
                     continue
-                ensure_directory(target.parent)
+                ensure_directory(target.parent, stop=root)
                 actual_member_uncompressed = 0
                 with zf.open(info) as source:
                     with target.open("xb") as output:

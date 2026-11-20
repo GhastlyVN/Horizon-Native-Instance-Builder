@@ -588,6 +588,49 @@ class InstanceArchiveTests(unittest.TestCase):
             self.assertFalse(destination.exists())
             self.assertFalse((root / "new").exists())
 
+    def test_extractor_rollback_preserves_parent_created_by_another_process(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            archive = root / "partial.zip"
+            destination = root / "new" / "nested" / "out"
+            foreign_parent = root / "new"
+            with zipfile.ZipFile(archive, "w") as zf:
+                zf.writestr("game/versions/26.3/26.3.json", "{}")
+                zf.writestr("game/a.bin", b"first payload")
+                zf.writestr("game/b.bin", b"second payload")
+
+            original_mkdir = pathlib.Path.mkdir
+            original_read = zipfile.ZipExtFile.read
+            raced = [False]
+
+            def create_foreign_parent(path, *args, **kwargs):
+                if path == destination and not raced[0]:
+                    original_mkdir(foreign_parent)
+                    raced[0] = True
+                    return original_mkdir(path, *args, **kwargs)
+                if path == foreign_parent and not raced[0]:
+                    original_mkdir(path)
+                    raced[0] = True
+                    raise FileExistsError(path)
+                return original_mkdir(path, *args, **kwargs)
+
+            def fail_second_member(member, size=-1):
+                if member.name == "game/b.bin":
+                    raise zipfile.BadZipFile("simulated CRC/read failure")
+                return original_read(member, size)
+
+            with (
+                patch.object(pathlib.Path, "mkdir", create_foreign_parent),
+                patch.object(zipfile.ZipExtFile, "read", fail_second_member),
+            ):
+                with self.assertRaisesRegex(zipfile.BadZipFile, "simulated CRC"):
+                    extract_safe(archive, destination)
+
+            self.assertTrue(raced[0])
+            self.assertTrue(foreign_parent.is_dir())
+            self.assertEqual(list(foreign_parent.iterdir()), [])
+            self.assertFalse(destination.exists())
+
     def test_extractor_removes_new_destination_after_midstream_failure(self):
         with tempfile.TemporaryDirectory() as temp:
             root = pathlib.Path(temp)
