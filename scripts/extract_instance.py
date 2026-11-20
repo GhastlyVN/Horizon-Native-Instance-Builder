@@ -330,7 +330,6 @@ def extract_safe(archive: pathlib.Path, destination: pathlib.Path) -> pathlib.Pa
                         )
                     if not stat.S_ISDIR(metadata.st_mode):
                         raise SystemExit(f"Extraction path component is not a directory: {current}")
-                    break
 
                 if stop is not None and current == stop:
                     break
@@ -358,12 +357,13 @@ def extract_safe(archive: pathlib.Path, destination: pathlib.Path) -> pathlib.Pa
 
         try:
             # Create components one at a time so rollback owns only successful mkdir calls.
-            ensure_directory(destination)
-            if _is_link_or_reparse_point(destination):
+            # Use the already-resolved destination so intentional parent symlinks
+            # (for example macOS /tmp) cannot redirect later path-based writes.
+            ensure_directory(root)
+            if _is_link_or_reparse_point(root):
                 raise SystemExit(
-                    f"symlink extraction destination refused (including Windows reparse points): {destination}"
+                    f"symlink extraction destination refused (including Windows reparse points): {root}"
                 )
-            root = destination.resolve()
 
             _validate_existing_destination_collisions(root, validated_entries)
             actual_total_uncompressed = 0
