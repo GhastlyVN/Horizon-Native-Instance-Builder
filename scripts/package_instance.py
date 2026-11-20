@@ -4,8 +4,10 @@ import argparse
 import hashlib
 import json
 import pathlib
+import os
 import re
 import stat
+import tempfile
 import zipfile
 
 
@@ -44,6 +46,26 @@ def safe_members(archive: zipfile.ZipFile):
         yield info, normalized
 
 
+def _reject_output_aliases(output: pathlib.Path, inputs: list[pathlib.Path]) -> None:
+    """Never let a package output replace or follow one of its source files."""
+    if output.is_symlink():
+        raise ValueError("Package output must not be a symlink")
+    if output.exists() and not output.is_file():
+        raise ValueError("Package output must be a regular file")
+
+    output_resolved = output.resolve()
+    for source in inputs:
+        if output_resolved == source.resolve():
+            raise ValueError(f"Package output must not overwrite an input: {source}")
+        if output.exists() and source.exists():
+            try:
+                aliases = os.path.samefile(output, source)
+            except OSError:
+                aliases = False
+            if aliases:
+                raise ValueError(f"Package output must not overwrite an input: {source}")
+
+
 def package(instance: pathlib.Path, binary: pathlib.Path, mods: pathlib.Path,
             target: str, horizon_commit: str, output: pathlib.Path) -> dict:
     if not instance.is_file() or not zipfile.is_zipfile(instance):
@@ -54,6 +76,7 @@ def package(instance: pathlib.Path, binary: pathlib.Path, mods: pathlib.Path,
         raise ValueError("horizon_commit must be a full 40-character commit SHA")
     instance_id = f"horizon-native-{horizon_commit[:7]}"
     mod_files = sorted(p for p in mods.glob("*.hnmod") if p.is_file())
+    _reject_output_aliases(output, [instance, binary, *mod_files])
     with zipfile.ZipFile(instance) as source:
         members = list(safe_members(source))
         if not members:
@@ -111,32 +134,42 @@ the native executable checksum, and mod input checksums are recorded in build-ma
 Native builds execute with your user permissions. Only import builds and mods you trust.
 """
     output.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED,
-                         compresslevel=6, allowZip64=True) as archive:
-        with zipfile.ZipFile(instance) as source:
-            for info, name in members:
-                if info.is_dir():
-                    continue
-                archive.writestr(f"instances/{instance_id}/{name}", source.read(info))
-        archive.write(binary, manifest["native_client"]["path"])
-        for mod in mod_files:
-            archive.write(mod, f"build-inputs/mods/{mod.name}")
-        archive.writestr("build-manifest.json",
-                         json.dumps(manifest, indent=2, sort_keys=True) + "\n")
-        archive.writestr("README-INSTALL.txt", instructions)
-    with zipfile.ZipFile(output) as archive:
-        bad = archive.testzip()
-        if bad:
-            raise ValueError(f"Packaged ZIP failed CRC verification at {bad}")
-        required = {
-            f"instances/{instance_id}/" + instance_files[0][1],
-            manifest["native_client"]["path"],
-            "build-manifest.json",
-            "README-INSTALL.txt",
-        }
-        missing = required.difference(archive.namelist())
-        if missing:
-            raise ValueError(f"Package is missing required entries: {sorted(missing)}")
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{output.name}.", suffix=".tmp", dir=output.parent
+    )
+    os.close(descriptor)
+    temporary = pathlib.Path(temporary_name)
+    try:
+        with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED,
+                             compresslevel=6, allowZip64=True) as archive:
+            with zipfile.ZipFile(instance) as source:
+                for info, name in members:
+                    if info.is_dir():
+                        continue
+                    archive.writestr(f"instances/{instance_id}/{name}", source.read(info))
+            archive.write(binary, manifest["native_client"]["path"])
+            for mod in mod_files:
+                archive.write(mod, f"build-inputs/mods/{mod.name}")
+            archive.writestr("build-manifest.json",
+                             json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+            archive.writestr("README-INSTALL.txt", instructions)
+        with zipfile.ZipFile(temporary) as archive:
+            bad = archive.testzip()
+            if bad:
+                raise ValueError(f"Packaged ZIP failed CRC verification at {bad}")
+            required = {
+                f"instances/{instance_id}/" + instance_files[0][1],
+                manifest["native_client"]["path"],
+                "build-manifest.json",
+                "README-INSTALL.txt",
+            }
+            missing = required.difference(archive.namelist())
+            if missing:
+                raise ValueError(f"Package is missing required entries: {sorted(missing)}")
+        # Atomic replacement means a failed package never destroys an earlier output.
+        os.replace(temporary, output)
+    finally:
+        temporary.unlink(missing_ok=True)
     return manifest
 
 
