@@ -10,11 +10,31 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-from scripts.prepare import discover_minecraft_root, validate_minecraft_archive, validate_minecraft_layout, validate_zip
-from scripts.extract_instance import extract_safe, _metadata_is_link_or_reparse_point
+from scripts.prepare import (
+    _portable_windows_component as prepare_portable_windows_component,
+    discover_minecraft_root,
+    validate_minecraft_archive,
+    validate_minecraft_layout,
+    validate_zip,
+)
+from scripts.extract_instance import (
+    _metadata_is_link_or_reparse_point,
+    _portable_windows_component as extract_portable_windows_component,
+    extract_safe,
+)
 
 
 class InstanceArchiveTests(unittest.TestCase):
+    def test_extractor_and_validator_share_portable_component_policy(self):
+        for component in ("", "safe", "CON", "trailing.", "\ud800"):
+            with self.subTest(component=repr(component)):
+                self.assertEqual(
+                    prepare_portable_windows_component(component),
+                    extract_portable_windows_component(component),
+                )
+        self.assertFalse(prepare_portable_windows_component("\ud800"))
+        self.assertFalse(extract_portable_windows_component("\ud800"))
+
     def test_discovers_nested_minecraft_game_root(self):
         names = [
             "export/.minecraft/versions/26.3/26.3.json",
@@ -359,6 +379,25 @@ class InstanceArchiveTests(unittest.TestCase):
                 extract_safe(archive, destination)
             self.assertFalse(destination.exists())
 
+    def test_extractor_detects_archive_mutation_and_rolls_back(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            archive = root / "changing.zip"
+            destination = root / "out"
+            with zipfile.ZipFile(archive, "w") as zf:
+                zf.writestr("game/versions/1/1.json", "{}")
+
+            def mutate_before_return(extracted_root, _archive_files):
+                metadata = archive.stat()
+                os.utime(archive, ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 2_000_000_000))
+                return extracted_root / "game"
+
+            with patch("scripts.extract_instance.find_minecraft_root", side_effect=mutate_before_return):
+                with self.assertRaisesRegex(SystemExit, "ZIP archive changed during extraction"):
+                    extract_safe(archive, destination)
+
+            self.assertFalse(destination.exists())
+            self.assertTrue(archive.exists())
     def test_rejects_symlink_entries(self):
         with tempfile.TemporaryDirectory() as temp:
             archive = pathlib.Path(temp) / "link.zip"
@@ -389,6 +428,30 @@ class InstanceArchiveTests(unittest.TestCase):
                     validate_zip(archive)
                 with self.assertRaisesRegex(SystemExit, message):
                     extract_safe(archive, root / "out")
+
+    def test_preflight_and_extractor_reject_oversized_compressed_archives_before_parsing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            archive = root / "oversized.zip"
+            with zipfile.ZipFile(archive, "w") as zf:
+                zf.writestr("payload.bin", b"small")
+
+            with patch("scripts.prepare.MAX_ARCHIVE_BYTES", 1):
+                with patch(
+                    "scripts.prepare.zipfile.ZipFile",
+                    side_effect=AssertionError("preflight parsed an oversized archive"),
+                ):
+                    with self.assertRaisesRegex(ValueError, "compressed size limit"):
+                        validate_zip(archive)
+
+            with patch("scripts.extract_instance.MAX_ARCHIVE_BYTES", 1):
+                with patch(
+                    "scripts.extract_instance.zipfile.ZipFile",
+                    side_effect=AssertionError("extractor parsed an oversized archive"),
+                ):
+                    with self.assertRaisesRegex(SystemExit, "compressed size limit"):
+                        extract_safe(archive, root / "out")
+            self.assertFalse((root / "out").exists())
 
     def test_preflight_rejects_too_many_zip_entries(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -513,7 +576,7 @@ class InstanceArchiveTests(unittest.TestCase):
             original_mkdir = pathlib.Path.mkdir
 
             def fail_after_creating_parents(path, *args, **kwargs):
-                if path == destination:
+                if path.resolve(strict=False) == destination.resolve(strict=False):
                     original_mkdir(path.parent, parents=True, exist_ok=True)
                     raise OSError("simulated destination mkdir failure")
                 return original_mkdir(path, *args, **kwargs)
@@ -524,6 +587,49 @@ class InstanceArchiveTests(unittest.TestCase):
 
             self.assertFalse(destination.exists())
             self.assertFalse((root / "new").exists())
+
+    def test_extractor_rollback_preserves_parent_created_by_another_process(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            archive = root / "partial.zip"
+            destination = root / "new" / "nested" / "out"
+            foreign_parent = root / "new"
+            with zipfile.ZipFile(archive, "w") as zf:
+                zf.writestr("game/versions/26.3/26.3.json", "{}")
+                zf.writestr("game/a.bin", b"first payload")
+                zf.writestr("game/b.bin", b"second payload")
+
+            original_mkdir = pathlib.Path.mkdir
+            original_read = zipfile.ZipExtFile.read
+            raced = [False]
+
+            def create_foreign_parent(path, *args, **kwargs):
+                if path.resolve(strict=False) == destination.resolve(strict=False) and not raced[0]:
+                    original_mkdir(foreign_parent)
+                    raced[0] = True
+                    return original_mkdir(path, *args, **kwargs)
+                if path.resolve(strict=False) == foreign_parent.resolve(strict=False) and not raced[0]:
+                    original_mkdir(path)
+                    raced[0] = True
+                    raise FileExistsError(path)
+                return original_mkdir(path, *args, **kwargs)
+
+            def fail_second_member(member, size=-1):
+                if member.name == "game/b.bin":
+                    raise zipfile.BadZipFile("simulated CRC/read failure")
+                return original_read(member, size)
+
+            with (
+                patch.object(pathlib.Path, "mkdir", create_foreign_parent),
+                patch.object(zipfile.ZipExtFile, "read", fail_second_member),
+            ):
+                with self.assertRaisesRegex(zipfile.BadZipFile, "simulated CRC"):
+                    extract_safe(archive, destination)
+
+            self.assertTrue(raced[0])
+            self.assertTrue(foreign_parent.is_dir())
+            self.assertEqual(list(foreign_parent.iterdir()), [])
+            self.assertFalse(destination.exists())
 
     def test_extractor_removes_new_destination_after_midstream_failure(self):
         with tempfile.TemporaryDirectory() as temp:

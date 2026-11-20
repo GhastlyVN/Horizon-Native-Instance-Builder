@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Safely unpack a Minecraft game folder from the supplied instance ZIP."""
 import argparse
+import contextlib
+import os
 import pathlib
 import stat
 import unicodedata
 import zipfile
 
+MAX_ARCHIVE_BYTES = 9 * 1024**3
 MAX_ARCHIVE_ENTRIES = 100_000
 MAX_MEMBER_UNCOMPRESSED_BYTES = 2 * 1024**3
 MAX_TOTAL_UNCOMPRESSED_BYTES = 8 * 1024**3
@@ -25,6 +28,8 @@ WINDOWS_RESERVED_NAMES = {
 
 def _portable_windows_component(part):
     """Match prepare.py's portable component limits and Windows alias checks."""
+    if not part:
+        return False
     try:
         utf8_bytes = len(part.encode("utf-8"))
         utf16_units = len(part.encode("utf-16-le")) // 2
@@ -32,8 +37,7 @@ def _portable_windows_component(part):
         return False
     stem = part.split(".", 1)[0].rstrip(" .").upper()
     return (
-        bool(part)
-        and utf8_bytes <= MAX_COMPONENT_UTF8_BYTES
+        utf8_bytes <= MAX_COMPONENT_UTF8_BYTES
         and utf16_units <= MAX_COMPONENT_UTF16_UNITS
         and not part.endswith((" ", "."))
         and not any(ord(char) < 32 or char in '<>:"|?*' for char in part)
@@ -152,6 +156,44 @@ def _validate_existing_destination_collisions(root, validated_entries):
                 )
 
 
+@contextlib.contextmanager
+def _open_bounded_zip(archive):
+    """Open one regular archive after bounding its compressed size, before ZIP parsing."""
+    archive = pathlib.Path(archive)
+    if not archive.is_file():
+        raise SystemExit(f"Not a ZIP archive: {archive}")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(archive, flags)
+    except OSError as error:
+        raise SystemExit(f"Could not open ZIP archive {archive}: {error}") from error
+    with os.fdopen(descriptor, "rb") as stream:
+        metadata = os.fstat(stream.fileno())
+        if not stat.S_ISREG(metadata.st_mode):
+            raise SystemExit(f"ZIP archive is not a regular file: {archive}")
+        if metadata.st_size > MAX_ARCHIVE_BYTES:
+            raise SystemExit(
+                "ZIP archive exceeds the compressed size limit "
+                f"({MAX_ARCHIVE_BYTES} bytes)"
+            )
+        try:
+            zf = zipfile.ZipFile(stream)
+        except zipfile.BadZipFile as error:
+            raise SystemExit(f"Not a ZIP archive: {archive}") from error
+        # Keep parse-time error conversion separate from extraction. A BadZipFile
+        # raised while streaming a member must reach extract_safe's rollback path.
+        with zf:
+            yield zf
+
+
+def _file_identity(metadata):
+    """Identity tuple used to detect in-place archive mutation during extraction."""
+    identity = (metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns)
+    if os.name != "nt":
+        return (*identity, metadata.st_ctime_ns)
+    return identity
+
+
 def extract_safe(archive: pathlib.Path, destination: pathlib.Path) -> pathlib.Path:
     # Path.is_symlink() misses Windows junctions. Reject reparse points before resolve()
     # can silently redirect the caller-selected destination.
@@ -170,7 +212,8 @@ def extract_safe(archive: pathlib.Path, destination: pathlib.Path) -> pathlib.Pa
 
     # Validate the complete archive before writing anything. This prevents a late malicious
     # entry from leaving a partially extracted tree behind.
-    with zipfile.ZipFile(archive) as zf:
+    with _open_bounded_zip(archive) as zf:
+        archive_identity = _file_identity(os.fstat(zf.fp.fileno()))
         entries = zf.infolist()
         if not entries:
             raise SystemExit("Empty ZIP archive")
@@ -238,9 +281,10 @@ def extract_safe(archive: pathlib.Path, destination: pathlib.Path) -> pathlib.Pa
                         f"Case-insensitive ZIP directory prefix collision: {info.filename}"
                     )
                 prefix_spellings[folded_prefix] = prefix
-            if not is_directory and any(
-                existing.startswith(folded + "/") for existing in seen_casefold
-            ):
+            # Prior entries register every directory prefix in prefix_spellings.
+            # A file cannot replace a path already used by a descendant; O(1) lookup
+            # avoids a quadratic scan for archives with many sibling files.
+            if not is_directory and folded in prefix_spellings:
                 raise SystemExit(
                     f"ZIP file/directory path collision: {info.filename} replaces a directory"
                 )
@@ -263,28 +307,63 @@ def extract_safe(archive: pathlib.Path, destination: pathlib.Path) -> pathlib.Pa
             validated_entries.append((info, path, is_directory))
 
         # Only create the output directory after every archive entry has passed preflight.
-        destination_missing = []
-        current = destination.absolute()
-        while current != current.parent and not current.exists():
-            destination_missing.append(current)
-            current = current.parent
         created_files = []
-        created_directories = list(reversed(destination_missing))
+        created_directories = []
+
+        def ensure_directory(path, *, stop=None):
+            path = pathlib.Path(path).absolute()
+            stop = pathlib.Path(stop).absolute() if stop is not None else None
+            if stop is not None and not path.is_relative_to(stop):
+                raise SystemExit(f"Extraction path escapes destination root: {path}")
+
+            missing = []
+            current = path
+            while True:
+                try:
+                    metadata = current.lstat()
+                except FileNotFoundError:
+                    missing.append(current)
+                else:
+                    if _metadata_is_link_or_reparse_point(metadata):
+                        raise SystemExit(
+                            f"Existing symlink or reparse point in extraction path refused: {current}"
+                        )
+                    if not stat.S_ISDIR(metadata.st_mode):
+                        raise SystemExit(f"Extraction path component is not a directory: {current}")
+
+                if stop is not None and current == stop:
+                    break
+                parent = current.parent
+                if parent == current:
+                    break
+                current = parent
+
+            for directory in reversed(missing):
+                try:
+                    directory.mkdir()
+                except FileExistsError:
+                    # A concurrent creator won the race. Validate its directory,
+                    # but never register it for this invocation's rollback.
+                    metadata = directory.lstat()
+                    if (
+                        _metadata_is_link_or_reparse_point(metadata)
+                        or not stat.S_ISDIR(metadata.st_mode)
+                    ):
+                        raise SystemExit(
+                            f"Unsafe concurrent extraction directory: {directory}"
+                        )
+                else:
+                    created_directories.append(directory)
 
         try:
-            # Include destination creation in the rollback scope: mkdir(parents=True)
-            # can create some ancestors before failing on a later component.
-            destination.mkdir(parents=True, exist_ok=True)
-            root = destination.resolve()
-
-            def ensure_directory(path):
-                missing = []
-                current = path
-                while current != root and not current.exists():
-                    missing.append(current)
-                    current = current.parent
-                path.mkdir(parents=True, exist_ok=True)
-                created_directories.extend(reversed(missing))
+            # Create components one at a time so rollback owns only successful mkdir calls.
+            # Use the already-resolved destination so intentional parent symlinks
+            # (for example macOS /tmp) cannot redirect later path-based writes.
+            ensure_directory(root)
+            if _is_link_or_reparse_point(root):
+                raise SystemExit(
+                    f"symlink extraction destination refused (including Windows reparse points): {root}"
+                )
 
             _validate_existing_destination_collisions(root, validated_entries)
             actual_total_uncompressed = 0
@@ -300,9 +379,9 @@ def extract_safe(archive: pathlib.Path, destination: pathlib.Path) -> pathlib.Pa
                             f"Existing symlink or reparse point in extraction path refused: {current}"
                         )
                 if is_directory:
-                    ensure_directory(target)
+                    ensure_directory(target, stop=root)
                     continue
-                ensure_directory(target.parent)
+                ensure_directory(target.parent, stop=root)
                 actual_member_uncompressed = 0
                 with zf.open(info) as source:
                     with target.open("xb") as output:
@@ -330,7 +409,10 @@ def extract_safe(archive: pathlib.Path, destination: pathlib.Path) -> pathlib.Pa
                     )
 
             archive_files = [path.as_posix() for _, path, is_directory in validated_entries if not is_directory]
-            return find_minecraft_root(root, archive_files)
+            game_root = find_minecraft_root(root, archive_files)
+            if _file_identity(os.fstat(zf.fp.fileno())) != archive_identity:
+                raise SystemExit(f"ZIP archive changed during extraction: {archive}")
+            return game_root
         except BaseException:
             # Extraction is exclusive: only remove files and directories created by this
             # invocation, never pre-existing destination content.
