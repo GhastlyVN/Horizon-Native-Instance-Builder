@@ -12,9 +12,9 @@ import tempfile
 import zipfile
 
 if __package__:
-    from .prepare import validate_zip_archive
+    from .prepare import MAX_ARCHIVE_BYTES, validate_zip_archive
 else:  # Executed as `python scripts/package_instance.py`.
-    from prepare import validate_zip_archive
+    from prepare import MAX_ARCHIVE_BYTES, validate_zip_archive
 
 
 def _file_identity(metadata):
@@ -187,6 +187,11 @@ def package(instance: pathlib.Path, binary: pathlib.Path, mods: pathlib.Path,
             instance_before = os.fstat(instance_stream.fileno())
             if not stat.S_ISREG(instance_before.st_mode):
                 raise ValueError(f"Original instance ZIP is not a regular file: {instance}")
+            if instance_before.st_size > MAX_ARCHIVE_BYTES:
+                raise ValueError(
+                    "Original instance ZIP exceeds the compressed size limit "
+                    f"({MAX_ARCHIVE_BYTES} bytes)"
+                )
             try:
                 source = zipfile.ZipFile(instance_stream)
             except zipfile.BadZipFile as error:

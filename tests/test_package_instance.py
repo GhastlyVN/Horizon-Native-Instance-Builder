@@ -339,6 +339,30 @@ class PackageInstanceTests(unittest.TestCase):
             )
 
 
+    def test_package_rejects_oversized_archive_before_zip_parsing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            instance, binary, mods, _ = self._inputs(root)
+            instance.write_bytes(b"oversized archive placeholder")
+            output = root / "bundle.zip"
+
+            with (
+                patch.object(package_instance, "MAX_ARCHIVE_BYTES", 1),
+                patch.object(
+                    package_instance.zipfile,
+                    "ZipFile",
+                    side_effect=AssertionError("oversized archive must not be parsed"),
+                ),
+            ):
+                with self.assertRaisesRegex(ValueError, "compressed size limit"):
+                    package(instance, binary, mods, "windows-x86_64",
+                            "7" * 40, output)
+
+            self.assertFalse(output.exists())
+            self.assertEqual(list(root.glob(".bundle.zip.*.tmp")), [])
+
+
+
 
 if __name__ == "__main__":
     unittest.main()

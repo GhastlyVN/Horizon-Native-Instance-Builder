@@ -369,6 +369,27 @@ class NativeModExtractionTests(unittest.TestCase):
             self.assertEqual(sentinel.read_text(encoding="utf-8"), "old bundle")
             self.assertEqual([path.name for path in destination.iterdir()], ["sample"])
 
+    def test_rejects_oversized_archive_before_zip_parsing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            archive = root / "sample.hnmod"
+            self._bundle(archive)
+            destination = root / "out"
+
+            with (
+                patch("scripts.extract_native_mods.MAX_ARCHIVE_BYTES", 1),
+                patch(
+                    "scripts.extract_native_mods.zipfile.ZipFile",
+                    side_effect=AssertionError("oversized archive must not be parsed"),
+                ),
+            ):
+                with self.assertRaisesRegex(ValueError, "compressed size limit"):
+                    extract_bundle(archive, destination)
+
+            self.assertFalse(destination.exists())
+
+
+
 
 if __name__ == "__main__":
     unittest.main()

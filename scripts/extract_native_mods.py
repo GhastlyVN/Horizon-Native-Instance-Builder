@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Safely unpack .hnmod ZIP bundles into the directory layout Horizon expects."""
 import argparse
+import contextlib
 import json
 import os
 import pathlib
@@ -14,6 +15,7 @@ import zipfile
 
 try:
     from scripts.prepare import (
+        MAX_ARCHIVE_BYTES,
         MAX_ARCHIVE_ENTRIES,
         MAX_MEMBER_UNCOMPRESSED_BYTES,
         MAX_TOTAL_UNCOMPRESSED_BYTES,
@@ -64,6 +66,29 @@ def _reject_duplicate_json_keys(pairs):
     return result
 
 
+
+@contextlib.contextmanager
+def _open_bounded_zip(archive_path: pathlib.Path):
+    """Bound and open the same archive descriptor before ZIP central-directory parsing."""
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(archive_path, flags)
+    except OSError as error:
+        raise ValueError(f"{archive_path}: could not open ZIP archive: {error}") from error
+    with os.fdopen(descriptor, "rb") as stream:
+        metadata = os.fstat(stream.fileno())
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError(f"{archive_path}: ZIP archive is not a regular file")
+        if metadata.st_size > MAX_ARCHIVE_BYTES:
+            raise ValueError(
+                f"{archive_path}: ZIP archive exceeds the compressed size limit "
+                f"({MAX_ARCHIVE_BYTES} bytes)"
+            )
+        with zipfile.ZipFile(stream) as bundle:
+            yield bundle
+
+
+
 def extract_bundle(archive_path: pathlib.Path, destination: pathlib.Path) -> pathlib.Path:
     # The output directory is derived from the archive's filesystem name, not a ZIP member.
     # Keep it to the same portable identifier grammar as a native mod ID before any writes.
@@ -78,7 +103,7 @@ def extract_bundle(archive_path: pathlib.Path, destination: pathlib.Path) -> pat
         raise ValueError(f"{archive_path.name}: unsafe .hnmod filename")
 
     try:
-        with zipfile.ZipFile(archive_path) as bundle:
+        with _open_bounded_zip(archive_path) as bundle:
             # Validate and extract through this exact open archive; never reopen the path.
             _, names = validate_zip(bundle)
             native = [name for name in names if pathlib.PurePosixPath(name).name == "horizon-native.json"]
