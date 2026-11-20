@@ -6,9 +6,13 @@ import json
 import pathlib
 import os
 import re
-import stat
 import tempfile
 import zipfile
+
+if __package__:
+    from .prepare import validate_zip_archive
+else:  # Executed as `python scripts/package_instance.py`.
+    from prepare import validate_zip_archive
 
 
 def sha256(path: pathlib.Path) -> str:
@@ -20,30 +24,12 @@ def sha256(path: pathlib.Path) -> str:
 
 
 def safe_members(archive: zipfile.ZipFile):
-    seen = set()
-    folded = set()
-    for info in archive.infolist():
-        name = info.filename.replace("\\", "/")
-        path = pathlib.PurePosixPath(name)
-        mode = (info.external_attr >> 16) & 0o170000
-        if (
-            not path.parts or name.startswith("/") or "\x00" in name
-            or any(part in ("", ".", "..") for part in path.parts)
-            or any(":" in part or part.endswith((" ", ".")) for part in path.parts)
-            or mode == stat.S_IFLNK
-            or info.flag_bits & 0x1
-        ):
-            raise ValueError(f"Unsafe instance ZIP entry: {info.filename}")
-        if any(re.fullmatch(r"(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\\..*)?", part, re.I)
-               for part in path.parts):
-            raise ValueError(f"Windows-reserved instance path: {info.filename}")
-        normalized = "/".join(path.parts)
-        key = normalized.casefold()
-        if key in folded:
-            raise ValueError(f"Duplicate/case-colliding instance path: {info.filename}")
-        folded.add(key)
-        seen.add(normalized)
-        yield info, normalized
+    """Use the same portable ZIP policy as the builder's validator and extractor."""
+    _, names = validate_zip_archive(archive)
+    infos = archive.infolist()
+    if len(infos) != len(names):
+        raise ValueError("Instance ZIP entries changed during validation")
+    yield from zip(infos, names)
 
 
 def _reject_output_aliases(output: pathlib.Path, inputs: list[pathlib.Path]) -> None:

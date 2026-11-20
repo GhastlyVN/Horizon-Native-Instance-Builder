@@ -124,6 +124,43 @@ class PackageInstanceTests(unittest.TestCase):
             self.assertEqual(output.read_bytes(), previous)
             self.assertEqual(list(root.glob(".bundle.zip.*.tmp")), [])
 
+    def test_package_rejects_unicode_normalized_directory_aliases(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            instance = root / "instance.zip"
+            with zipfile.ZipFile(instance, "w") as archive:
+                archive.writestr("game/Caf\u00e9/", b"")
+                archive.writestr("game/cafe\u0301/child.txt", b"payload")
+            binary = root / "horizon-client.exe"
+            binary.write_bytes(b"test executable")
+            mods = root / "mods"
+            mods.mkdir()
+            output = root / "bundle.zip"
+
+            with self.assertRaisesRegex(ValueError, "Case-insensitive ZIP directory prefix collision"):
+                package(instance, binary, mods, "windows-x86_64",
+                        "1" * 40, output)
+
+            self.assertFalse(output.exists())
+
+    def test_package_rejects_windows_superscript_reserved_device_names(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            instance = root / "instance.zip"
+            with zipfile.ZipFile(instance, "w") as archive:
+                archive.writestr("game/COM\u00b9.txt", b"reserved")
+            binary = root / "horizon-client.exe"
+            binary.write_bytes(b"test executable")
+            mods = root / "mods"
+            mods.mkdir()
+            output = root / "bundle.zip"
+
+            with self.assertRaisesRegex(ValueError, "Unsafe ZIP path"):
+                package(instance, binary, mods, "windows-x86_64",
+                        "2" * 40, output)
+
+            self.assertFalse(output.exists())
+
     def test_rejects_zip_traversal(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
