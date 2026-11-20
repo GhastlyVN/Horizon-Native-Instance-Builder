@@ -3,6 +3,8 @@ import json
 import os
 import pathlib
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -388,6 +390,34 @@ class NativeModExtractionTests(unittest.TestCase):
 
             self.assertFalse(destination.exists())
 
+
+
+    def test_cli_extracts_valid_bundle_with_direct_execution_imports(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            source = root / "mods"
+            source.mkdir()
+            self._bundle(source / "sample.hnmod")
+            destination = root / "out"
+            script = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "extract_native_mods.py"
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    str(source),
+                    "--destination",
+                    str(destination),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((destination / "sample" / "horizon-native.json").is_file())
+            self.assertTrue((destination / "sample" / "mixins/sample_mod/horizon-mixin.toml").is_file())
 
 
 
