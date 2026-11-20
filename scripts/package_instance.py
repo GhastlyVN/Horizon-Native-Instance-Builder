@@ -109,6 +109,47 @@ def _reject_output_aliases(output: pathlib.Path, inputs: list[pathlib.Path]) -> 
                 raise ValueError(f"Package output must not overwrite an input: {source}")
 
 
+def _open_regular_file_no_follow(path: pathlib.Path, description: str):
+    """Open one regular input without following a symlink or accepting a path swap."""
+    try:
+        before = path.lstat()
+    except OSError as error:
+        raise ValueError(f"{description} is unavailable: {path}") from error
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError(
+            f"{description} must be a regular file (symlinks and special files are refused): {path}"
+        )
+
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise ValueError(
+            f"{description} could not be opened without following a symlink: {path}"
+        ) from error
+
+    stream = os.fdopen(descriptor, "rb")
+    try:
+        opened = os.fstat(stream.fileno())
+        try:
+            current = path.lstat()
+        except OSError as error:
+            raise ValueError(f"{description} changed while it was being opened: {path}") from error
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or not stat.S_ISREG(current.st_mode)
+            or _file_identity(before) != _file_identity(opened)
+            or _file_identity(opened) != _file_identity(current)
+        ):
+            raise ValueError(f"{description} changed while it was being opened: {path}")
+        return stream, opened
+    except BaseException:
+        stream.close()
+        raise
+
+
 def package(instance: pathlib.Path, binary: pathlib.Path, mods: pathlib.Path,
             target: str, horizon_commit: str, output: pathlib.Path) -> dict:
     if not instance.is_file():
@@ -118,7 +159,18 @@ def package(instance: pathlib.Path, binary: pathlib.Path, mods: pathlib.Path,
     if not re.fullmatch(r"[0-9a-f]{40}", horizon_commit):
         raise ValueError("horizon_commit must be a full 40-character commit SHA")
     instance_id = f"horizon-native-{horizon_commit[:7]}"
-    mod_files = sorted(p for p in mods.glob("*.hnmod") if p.is_file())
+    mod_files = []
+    for candidate in sorted(mods.glob("*.hnmod")):
+        try:
+            metadata = candidate.lstat()
+        except OSError as error:
+            raise ValueError(f"Native mod input is unavailable: {candidate}") from error
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError(
+                "Native mod input must be a regular file "
+                f"(symlinks and special files are refused): {candidate}"
+            )
+        mod_files.append(candidate)
     _reject_output_aliases(output, [instance, binary, *mod_files])
 
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -156,10 +208,10 @@ def package(instance: pathlib.Path, binary: pathlib.Path, mods: pathlib.Path,
 
                     mod_inputs = []
                     for mod in mod_files:
-                        stream = stack.enter_context(mod.open("rb"))
-                        metadata = os.fstat(stream.fileno())
-                        if not stat.S_ISREG(metadata.st_mode):
-                            raise ValueError(f"Native mod input is not a regular file: {mod}")
+                        stream, metadata = _open_regular_file_no_follow(
+                            mod, "Native mod input"
+                        )
+                        stack.enter_context(stream)
                         mod_inputs.append((mod, stream, metadata))
 
                     manifest = {

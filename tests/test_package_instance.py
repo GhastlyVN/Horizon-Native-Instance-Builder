@@ -278,5 +278,67 @@ class PackageInstanceTests(unittest.TestCase):
                         "b" * 40, root / "bundle.zip")
 
 
+    def test_package_rejects_symlink_native_mod_input(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            instance, binary, mods, mod = self._inputs(root)
+            outside = root / "outside.hnmod"
+            outside.write_bytes(b"must not be imported through a symlink")
+            mod.unlink()
+            try:
+                mod.symlink_to(outside)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"symlinks are unavailable: {error}")
+
+            output = root / "bundle.zip"
+            with self.assertRaisesRegex(
+                ValueError, "symlinks and special files are refused"
+            ):
+                package(instance, binary, mods, "windows-x86_64",
+                        "9" * 40, output)
+
+            self.assertFalse(output.exists())
+            self.assertEqual(
+                outside.read_bytes(), b"must not be imported through a symlink"
+            )
+
+    def test_package_rejects_symlink_swap_between_mod_scan_and_open(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            instance, binary, mods, mod = self._inputs(root)
+            outside = root / "outside.hnmod"
+            outside.write_bytes(b"must not be imported after a path swap")
+            output = root / "bundle.zip"
+            real_open = os.open
+            swapped = False
+
+            def swap_before_open(path, flags, *args, **kwargs):
+                nonlocal swapped
+                if Path(path) == mod and not swapped:
+                    mod.unlink()
+                    try:
+                        mod.symlink_to(outside)
+                    except (OSError, NotImplementedError) as error:
+                        raise unittest.SkipTest(
+                            f"symlinks are unavailable: {error}"
+                        )
+                    swapped = True
+                return real_open(path, flags, *args, **kwargs)
+
+            with patch.object(package_instance.os, "open", side_effect=swap_before_open):
+                with self.assertRaisesRegex(
+                    ValueError, "could not be opened without following a symlink|changed while it was being opened"
+                ):
+                    package(instance, binary, mods, "windows-x86_64",
+                            "8" * 40, output)
+
+            self.assertTrue(swapped)
+            self.assertFalse(output.exists())
+            self.assertEqual(
+                outside.read_bytes(), b"must not be imported after a path swap"
+            )
+
+
+
 if __name__ == "__main__":
     unittest.main()
