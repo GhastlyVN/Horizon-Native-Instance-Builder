@@ -878,7 +878,7 @@ class InstanceArchiveTests(unittest.TestCase):
             archive.write_bytes(
                 struct.pack(
                     "<4s4H2LH",
-                    b"PK\\x05\\x06",
+                    b"PK\x05\\x06",
                     0, 0, 0, 0,
                     MAX_CENTRAL_DIRECTORY_BYTES + 1,
                     0, 0,
@@ -899,15 +899,15 @@ class InstanceArchiveTests(unittest.TestCase):
             archive = pathlib.Path(temp) / "oversized-zip64-central-directory.zip"
             zip64_record = struct.pack(
                 "<4sQ2H2I4Q",
-                b"PK\\x06\\x06",
+                b"PK\x06\\x06",
                 44, 45, 45, 0, 0, 0, 0,
                 MAX_CENTRAL_DIRECTORY_BYTES + 1,
                 0,
             )
-            locator = struct.pack("<4sIQI", b"PK\\x06\\x07", 0, 0, 1)
+            locator = struct.pack("<4sIQI", b"PK\x06\\x07", 0, 0, 1)
             end_record = struct.pack(
                 "<4s4H2LH",
-                b"PK\\x05\\x06",
+                b"PK\x05\\x06",
                 0, 0, 0xFFFF, 0xFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0,
             )
             archive.write_bytes(zip64_record + locator + end_record)
@@ -924,7 +924,7 @@ class InstanceArchiveTests(unittest.TestCase):
             archive.write_bytes(
                 struct.pack(
                     "<4s4H2LH",
-                    b"PK\\x05\\x06",
+                    b"PK\x05\\x06",
                     0, 0, 0, 0,
                     MAX_CENTRAL_DIRECTORY_BYTES + 1,
                     0, 0,
