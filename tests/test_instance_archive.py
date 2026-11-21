@@ -906,7 +906,7 @@ class InstanceArchiveTests(unittest.TestCase):
             zip64_record = struct.pack(
                 "<4sQ2H2I4Q",
                 b"PK\x06\x06",
-                44, 45, 45, 0, 0, 0, 1, 1,
+                44, 45, 45, 0, 0, 1, 1,
                 len(central_directory),
                 0,
             )
