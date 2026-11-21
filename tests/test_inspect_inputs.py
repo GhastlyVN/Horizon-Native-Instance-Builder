@@ -3,12 +3,14 @@ import io
 import json
 import os
 import pathlib
+import struct
 import tempfile
 import unittest
 import zipfile
 from unittest.mock import patch
 
 from scripts import inspect_inputs
+from scripts.prepare import MAX_CENTRAL_DIRECTORY_BYTES
 
 
 class InspectInputsTests(unittest.TestCase):
@@ -71,6 +73,47 @@ class InspectInputsTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "Unsafe ZIP path"):
                     inspect_inputs.inspect_instance(archive)
                 crc_scan.assert_not_called()
+
+    def test_inspector_rejects_symlink_archive_input_before_parsing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            archive = pathlib.Path(directory) / "instance.zip"
+            alias = pathlib.Path(directory) / "instance-link.zip"
+            self._instance_zip(archive)
+            try:
+                alias.symlink_to(archive)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"symlinks are unavailable: {error}")
+
+            with patch.object(
+                zipfile,
+                "ZipFile",
+                side_effect=AssertionError("inspector must reject links before ZIP parsing"),
+            ):
+                with self.assertRaisesRegex(ValueError, "regular non-symlink file"):
+                    inspect_inputs.inspect_instance(alias)
+
+    @unittest.skipIf(os.name == "nt", "open-file replacement semantics differ on Windows")
+    def test_inspector_rejects_archive_path_replacement_after_open(self):
+        with tempfile.TemporaryDirectory() as directory:
+            archive = pathlib.Path(directory) / "instance.zip"
+            replacement = pathlib.Path(directory) / "replacement.zip"
+            self._instance_zip(archive)
+            self._instance_zip(replacement)
+            original_open = os.open
+            replaced = False
+
+            def replace_after_open(path, flags, *args, **kwargs):
+                nonlocal replaced
+                descriptor = original_open(path, flags, *args, **kwargs)
+                if pathlib.Path(path) == archive and not replaced:
+                    os.replace(replacement, archive)
+                    replaced = True
+                return descriptor
+
+            with patch("scripts.prepare.os.open", side_effect=replace_after_open):
+                with self.assertRaisesRegex(ValueError, "changed while it was being opened"):
+                    inspect_inputs.inspect_instance(archive)
+            self.assertTrue(replaced)
 
     def test_output_cannot_be_the_instance_archive(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -175,6 +218,41 @@ class InspectInputsTests(unittest.TestCase):
             with patch.object(zipfile.ZipFile, "testzip", mutate_after_crc_scan):
                 with self.assertRaisesRegex(ValueError, "changed during inspection"):
                     inspect_inputs.inspect_instance(archive)
+
+
+    def test_inspector_rejects_oversized_central_directory_before_zipfile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            archive = pathlib.Path(directory) / "oversized-central-directory.zip"
+            archive.write_bytes(
+                struct.pack(
+                    "<4s4H2LH",
+                    b"PK\x05\x06",
+                    0, 0, 0, 0,
+                    MAX_CENTRAL_DIRECTORY_BYTES + 1,
+                    0, 0,
+                )
+            )
+
+            with patch.object(
+                zipfile,
+                "ZipFile",
+                side_effect=AssertionError("inspector must preflight before ZIP parsing"),
+            ):
+                with self.assertRaisesRegex(ValueError, "central directory exceeds the size limit"):
+                    inspect_inputs.inspect_instance(archive)
+
+
+    def test_atomic_report_is_sorted_json_with_trailing_newline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory) / "reports" / "inspection.json"
+            inspect_inputs.write_report_atomic(
+                output, {"z": 1, "a": {"d": 4, "b": 2}}
+            )
+            self.assertEqual(
+                output.read_text(encoding="utf-8"),
+                '{\n  "a": {\n    "b": 2,\n    "d": 4\n  },\n  "z": 1\n}\n',
+            )
+
 
 
 if __name__ == "__main__":

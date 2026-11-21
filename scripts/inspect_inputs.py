@@ -33,7 +33,7 @@ CHUNK_SIZE = 1024 * 1024
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.prepare import validate_zip_archive  # noqa: E402
+from scripts.prepare import open_regular_zip_source, preflight_zip_stream, validate_zip_archive  # noqa: E402
 
 
 def _file_identity(metadata: os.stat_result) -> tuple[int, ...]:
@@ -71,9 +71,9 @@ def _hash_stream_bounded(stream) -> str:
 
 @contextmanager
 def _validated_archive(path: pathlib.Path):
-    """Validate and consume one open archive handle, then detect path/file mutation."""
+    """Validate one no-follow archive handle, then detect path/file mutation."""
     path = pathlib.Path(path)
-    with path.open("rb") as stream:
+    with open_regular_zip_source(path) as stream:
         before = os.fstat(stream.fileno())
         if not stat.S_ISREG(before.st_mode):
             raise ValueError(f"Archive must be a regular file: {path}")
@@ -85,6 +85,7 @@ def _validated_archive(path: pathlib.Path):
 
         digest = _hash_stream_bounded(stream)
         stream.seek(0)
+        preflight_zip_stream(stream, path)
         try:
             archive = zipfile.ZipFile(stream)
         except (OSError, zipfile.BadZipFile) as error:
@@ -101,11 +102,14 @@ def _validated_archive(path: pathlib.Path):
 
         after = os.fstat(stream.fileno())
         try:
-            path_after = path.stat()
+            path_after = path.lstat()
         except OSError as error:
             raise ValueError(f"Archive path changed during inspection: {path}") from error
         if (
-            _file_identity(before) != _file_identity(after)
+            not stat.S_ISREG(path_after.st_mode)
+            or stat.S_ISLNK(path_after.st_mode)
+            or bool(getattr(path_after, "st_file_attributes", 0) & 0x400)
+            or _file_identity(before) != _file_identity(after)
             or _file_identity(after) != _file_identity(path_after)
         ):
             raise ValueError(f"Archive changed during inspection: {path}")
