@@ -3,12 +3,14 @@ import io
 import json
 import os
 import pathlib
+import struct
 import tempfile
 import unittest
 import zipfile
 from unittest.mock import patch
 
 from scripts import inspect_inputs
+from scripts.prepare import MAX_CENTRAL_DIRECTORY_BYTES
 
 
 class InspectInputsTests(unittest.TestCase):
@@ -175,6 +177,29 @@ class InspectInputsTests(unittest.TestCase):
             with patch.object(zipfile.ZipFile, "testzip", mutate_after_crc_scan):
                 with self.assertRaisesRegex(ValueError, "changed during inspection"):
                     inspect_inputs.inspect_instance(archive)
+
+
+    def test_inspector_rejects_oversized_central_directory_before_zipfile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            archive = pathlib.Path(directory) / "oversized-central-directory.zip"
+            archive.write_bytes(
+                struct.pack(
+                    "<4s4H2LH",
+                    b"PK\\x05\\x06",
+                    0, 0, 0, 0,
+                    MAX_CENTRAL_DIRECTORY_BYTES + 1,
+                    0, 0,
+                )
+            )
+
+            with patch.object(
+                zipfile,
+                "ZipFile",
+                side_effect=AssertionError("inspector must preflight before ZIP parsing"),
+            ):
+                with self.assertRaisesRegex(ValueError, "central directory exceeds the size limit"):
+                    inspect_inputs.inspect_instance(archive)
+
 
 
 if __name__ == "__main__":
