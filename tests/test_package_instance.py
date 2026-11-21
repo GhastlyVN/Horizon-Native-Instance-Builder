@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import stat
+import struct
 import tempfile
 import unittest
 import zipfile
@@ -10,6 +11,7 @@ from pathlib import Path
 
 from scripts import package_instance
 from scripts.package_instance import package
+from scripts.prepare import MAX_CENTRAL_DIRECTORY_BYTES
 
 
 class PackageInstanceTests(unittest.TestCase):
@@ -505,6 +507,36 @@ class PackageInstanceTests(unittest.TestCase):
                 )
 
             self.assertFalse(output.exists())
+
+
+
+    def test_package_rejects_oversized_central_directory_before_zipfile(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            instance, binary, mods, _ = self._inputs(root)
+            instance.write_bytes(
+                struct.pack(
+                    "<4s4H2LH",
+                    b"PK\\x05\\x06",
+                    0, 0, 0, 0,
+                    MAX_CENTRAL_DIRECTORY_BYTES + 1,
+                    0, 0,
+                )
+            )
+            output = root / "bundle.zip"
+
+            with patch.object(
+                package_instance.zipfile,
+                "ZipFile",
+                side_effect=AssertionError("package must preflight before ZIP parsing"),
+            ):
+                with self.assertRaisesRegex(ValueError, "central directory exceeds the size limit"):
+                    package(
+                        instance, binary, mods, "windows-x86_64", "f" * 40, output
+                    )
+
+            self.assertFalse(output.exists())
+            self.assertEqual(list(root.glob(".bundle.zip.*.tmp")), [])
 
 
 
