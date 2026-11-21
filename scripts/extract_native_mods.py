@@ -30,6 +30,7 @@ except ModuleNotFoundError:  # direct execution: python scripts/extract_native_m
         MAX_MEMBER_UNCOMPRESSED_BYTES,
         MAX_TOTAL_UNCOMPRESSED_BYTES,
         WINDOWS_RESERVED_NAMES,
+        preflight_zip_stream,
         validate_zip,
     )
 
