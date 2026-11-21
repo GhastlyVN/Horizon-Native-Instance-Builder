@@ -20,6 +20,7 @@ try:
         MAX_MEMBER_UNCOMPRESSED_BYTES,
         MAX_TOTAL_UNCOMPRESSED_BYTES,
         WINDOWS_RESERVED_NAMES,
+        preflight_zip_stream,
         validate_zip,
     )
 except ModuleNotFoundError:  # direct execution: python scripts/extract_native_mods.py
@@ -85,6 +86,7 @@ def _open_bounded_zip(archive_path: pathlib.Path):
                 f"{archive_path}: ZIP archive exceeds the compressed size limit "
                 f"({MAX_ARCHIVE_BYTES} bytes)"
             )
+        preflight_zip_stream(stream, archive_path)
         with zipfile.ZipFile(stream) as bundle:
             yield bundle
 
