@@ -429,7 +429,7 @@ class NativeModExtractionTests(unittest.TestCase):
             archive.write_bytes(
                 struct.pack(
                     "<4s4H2LH",
-                    b"PK\\x05\\x06",
+                    b"PK\x05\x06",
                     0, 0, 0, 0,
                     MAX_CENTRAL_DIRECTORY_BYTES + 1,
                     0, 0,
