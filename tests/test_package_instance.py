@@ -7,6 +7,7 @@ import tempfile
 import unittest
 import zipfile
 from unittest.mock import patch
+from types import SimpleNamespace
 from pathlib import Path
 
 from scripts import package_instance
@@ -548,6 +549,36 @@ class PackageInstanceTests(unittest.TestCase):
             self.assertFalse(output.exists())
             self.assertEqual(list(root.glob(".bundle.zip.*.tmp")), [])
 
+
+
+
+    def test_package_rejects_windows_reparse_point_inputs_and_outputs(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "input.bin"
+            path.write_bytes(b"input")
+            actual = path.lstat()
+            reparse = SimpleNamespace(
+                st_mode=actual.st_mode,
+                st_dev=actual.st_dev,
+                st_ino=actual.st_ino,
+                st_size=actual.st_size,
+                st_mtime_ns=actual.st_mtime_ns,
+                st_ctime_ns=actual.st_ctime_ns,
+                st_file_attributes=0x400,
+            )
+
+            with patch.object(Path, "lstat", return_value=reparse):
+                with patch.object(
+                    package_instance.os,
+                    "open",
+                    side_effect=AssertionError("reparse-point inputs must be rejected before open"),
+                ):
+                    with self.assertRaisesRegex(ValueError, "reparse point"):
+                        package_instance._open_regular_file_no_follow(path, "Native client input")
+
+            with patch.object(Path, "lstat", return_value=reparse):
+                with self.assertRaisesRegex(ValueError, "reparse point"):
+                    package_instance._reject_output_aliases(path, [])
 
 
 

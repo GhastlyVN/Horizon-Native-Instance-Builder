@@ -94,14 +94,31 @@ def safe_members(archive: zipfile.ZipFile):
     yield from zip(infos, names)
 
 
-def _reject_output_aliases(output: pathlib.Path, inputs: list[pathlib.Path]) -> None:
-    """Never let a package output replace or follow one of its source files."""
-    if output.is_symlink():
-        raise ValueError("Package output must not be a symlink")
-    if output.exists() and not output.is_file():
-        raise ValueError("Package output must be a regular file")
+def _metadata_is_link_or_reparse_point(metadata) -> bool:
+    """Detect POSIX links and Windows FILE_ATTRIBUTE_REPARSE_POINT entries."""
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        getattr(metadata, "st_file_attributes", 0) & 0x400
+    )
 
-    output_resolved = output.resolve()
+
+def _reject_output_aliases(output: pathlib.Path, inputs: list[pathlib.Path]) -> pathlib.Path:
+    """Reject linked output leaves and return a canonical path for atomic replacement."""
+    try:
+        metadata = output.lstat()
+    except FileNotFoundError:
+        metadata = None
+    except OSError as error:
+        raise ValueError(f"Package output path is unavailable: {output}") from error
+
+    if metadata is not None:
+        if _metadata_is_link_or_reparse_point(metadata):
+            raise ValueError("Package output must not be a symlink or reparse point")
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("Package output must be a regular file")
+
+    # Resolve existing parent aliases (for example macOS /tmp) once, then use this
+    # canonical destination for both the temporary file and the final os.replace().
+    output_resolved = output.resolve(strict=False)
     for source in inputs:
         if output_resolved == source.resolve():
             raise ValueError(f"Package output must not overwrite an input: {source}")
@@ -112,6 +129,7 @@ def _reject_output_aliases(output: pathlib.Path, inputs: list[pathlib.Path]) -> 
                 aliases = False
             if aliases:
                 raise ValueError(f"Package output must not overwrite an input: {source}")
+    return output_resolved
 
 
 def _open_regular_file_no_follow(path: pathlib.Path, description: str):
@@ -293,7 +311,7 @@ def package(instance: pathlib.Path, binary: pathlib.Path, mods: pathlib.Path,
     _validate_portable_basename(binary.name, "Native client")
     for mod in mod_files:
         _validate_portable_basename(mod.name, "Native mod")
-    _reject_output_aliases(output, [instance, binary, *mod_files])
+    output = _reject_output_aliases(output, [instance, binary, *mod_files])
 
     output.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
