@@ -33,7 +33,7 @@ CHUNK_SIZE = 1024 * 1024
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.prepare import validate_zip_archive  # noqa: E402
+from scripts.prepare import preflight_zip_stream, validate_zip_archive  # noqa: E402
 
 
 def _file_identity(metadata: os.stat_result) -> tuple[int, ...]:
@@ -85,6 +85,7 @@ def _validated_archive(path: pathlib.Path):
 
         digest = _hash_stream_bounded(stream)
         stream.seek(0)
+        preflight_zip_stream(stream, path)
         try:
             archive = zipfile.ZipFile(stream)
         except (OSError, zipfile.BadZipFile) as error:
