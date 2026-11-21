@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -17,6 +18,7 @@ DEFAULT_MINECRAFT = ROOT / "input/minecraft/minecraft.zip"
 DEFAULT_MODS = ROOT / "input/mods"
 REPORT = ROOT / "build-report"
 MAX_ARCHIVE_BYTES = 9 * 1024**3
+MAX_CENTRAL_DIRECTORY_BYTES = 64 * 1024**2
 MAX_ARCHIVE_ENTRIES = 100_000
 MAX_MEMBER_UNCOMPRESSED_BYTES = 2 * 1024**3
 MAX_TOTAL_UNCOMPRESSED_BYTES = 8 * 1024**3
@@ -146,11 +148,69 @@ def validate_minecraft_layout(names):
 
 
 
+def preflight_zip_stream(stream, archive_name="<open ZIP>"):
+    """Bound EOCD/ZIP64 metadata before ZipFile allocates central-directory entries."""
+    try:
+        position = stream.tell()
+    except (AttributeError, OSError) as error:
+        raise ValueError(f"{archive_name}: ZIP input must be seekable") from error
+
+    try:
+        stream.seek(0, os.SEEK_END)
+        file_size = stream.tell()
+        endrec = zipfile._EndRecData(stream)
+        if endrec is None or len(endrec) < 10:
+            raise ValueError(f"{archive_name}: ZIP end-of-central-directory record is missing")
+
+        disk_number, central_disk, entries_on_disk, entries_total, central_size, central_offset = endrec[1:7]
+        end_record_offset = endrec[9]
+        if disk_number != 0 or central_disk != 0 or entries_on_disk != entries_total:
+            raise ValueError(f"{archive_name}: multi-disk ZIP archives are not supported")
+        if (
+            entries_total == 0xFFFF
+            or central_size == 0xFFFFFFFF
+            or central_offset == 0xFFFFFFFF
+        ):
+            raise ValueError(f"{archive_name}: ZIP64 end-of-central-directory record is incomplete")
+        if entries_total > MAX_ARCHIVE_ENTRIES:
+            raise ValueError(
+                f"{archive_name}: ZIP archive has too many entries "
+                f"({entries_total}; limit {MAX_ARCHIVE_ENTRIES})"
+            )
+        if central_size > MAX_CENTRAL_DIRECTORY_BYTES:
+            raise ValueError(
+                f"{archive_name}: ZIP central directory exceeds the size limit "
+                f"({central_size} bytes; limit {MAX_CENTRAL_DIRECTORY_BYTES})"
+            )
+        if (
+            central_size < 0
+            or central_offset < 0
+            or central_offset + central_size > file_size
+            or central_offset + central_size > end_record_offset
+        ):
+            raise ValueError(f"{archive_name}: ZIP central-directory bounds are invalid")
+        return entries_total, central_size
+    except ValueError:
+        raise
+    except (OSError, zipfile.BadZipFile, IndexError, TypeError) as error:
+        raise ValueError(f"{archive_name}: invalid ZIP end-of-central-directory record") from error
+    finally:
+        stream.seek(position)
+
+
+@contextlib.contextmanager
+def open_preflighted_zip(stream, archive_name="<open ZIP>"):
+    """Open a ZIP only after bounding its standard or ZIP64 central directory."""
+    preflight_zip_stream(stream, archive_name)
+    with zipfile.ZipFile(stream) as archive:
+        yield archive
+
+
 def validate_minecraft_archive(path, names):
     """Validate real files and the asset-index references, not just directory names."""
     root = discover_minecraft_root(names)
     prefix = "" if root == "." else root.rstrip("/") + "/"
-    with zipfile.ZipFile(path) as archive:
+    with path.open("rb") as stream, open_preflighted_zip(stream, path) as archive:
         entries = {
             info.filename.replace(chr(92), "/"): info
             for info in archive.infolist()
@@ -293,7 +353,7 @@ def validate_minecraft_archive(path, names):
     return root
 
 def validate_zip_archive(z):
-    """Validate an already-open ZIP so callers can preflight and consume the same bytes."""
+    """Validate an already-open ZIP; file-backed callers must preflight before ZipFile construction."""
     # Enforce the compressed-size bound for file-backed ZIPs supplied directly.
     stream = getattr(z, "fp", None)
     if stream is not None:
@@ -432,7 +492,7 @@ def validate_zip(path):
                 f"({MAX_ARCHIVE_BYTES} bytes)"
             )
         try:
-            with zipfile.ZipFile(stream) as z:
+            with open_preflighted_zip(stream, path) as z:
                 return validate_zip_archive(z)
         except zipfile.BadZipFile as error:
             raise ValueError(f"Not a ZIP archive: {path}") from error
