@@ -12,9 +12,23 @@ import tempfile
 import zipfile
 
 if __package__:
-    from .prepare import MAX_ARCHIVE_BYTES, validate_zip_archive
+    from .prepare import (
+        MAX_ARCHIVE_BYTES,
+        MAX_PATH_COMPONENTS,
+        MAX_PATH_UTF8_BYTES,
+        _collision_key,
+        _portable_windows_component,
+        validate_zip_archive,
+    )
 else:  # Executed as `python scripts/package_instance.py`.
-    from prepare import MAX_ARCHIVE_BYTES, validate_zip_archive
+    from prepare import (
+        MAX_ARCHIVE_BYTES,
+        MAX_PATH_COMPONENTS,
+        MAX_PATH_UTF8_BYTES,
+        _collision_key,
+        _portable_windows_component,
+        validate_zip_archive,
+    )
 
 
 def _file_identity(metadata):
@@ -150,8 +164,121 @@ def _open_regular_file_no_follow(path: pathlib.Path, description: str):
         raise
 
 
+def _member_is_directory(info: zipfile.ZipInfo) -> bool:
+    """Match the validator's normalized backslash-directory policy."""
+    return info.is_dir() or info.filename.replace(chr(92), "/").endswith("/")
+
+
+def _validate_portable_basename(name: str, description: str) -> None:
+    if (
+        not name
+        or "/" in name
+        or chr(92) in name
+        or not _portable_windows_component(name)
+    ):
+        raise ValueError(f"{description} has a non-portable filename: {name!r}")
+
+
+def _validate_generated_zip_paths(paths: list[str]) -> None:
+    """Validate the final names written to the package, not only their source names."""
+    seen_casefold = set()
+    files_casefold = set()
+    prefix_spellings = {}
+
+    for raw_name in paths:
+        try:
+            path_bytes = len(raw_name.encode("utf-8"))
+        except UnicodeEncodeError as error:
+            raise ValueError(f"Generated ZIP path is not valid Unicode: {raw_name!r}") from error
+        parts = pathlib.PurePosixPath(raw_name.replace(chr(92), "/")).parts
+        if (
+            path_bytes > MAX_PATH_UTF8_BYTES
+            or len(parts) > MAX_PATH_COMPONENTS
+            or not parts
+            or raw_name.startswith("/")
+            or chr(0) in raw_name
+            or ".." in parts
+            or any(not _portable_windows_component(part) for part in parts)
+        ):
+            raise ValueError(f"Unsafe generated ZIP path: {raw_name!r}")
+
+        normalized = "/".join(parts)
+        folded = _collision_key(normalized)
+        if folded in seen_casefold:
+            raise ValueError(f"Case-insensitive generated ZIP path collision: {raw_name}")
+
+        parents = ["/".join(parts[:index]) for index in range(1, len(parts))]
+        folded_parents = [_collision_key(parent) for parent in parents]
+        conflict = next((parent for parent in folded_parents if parent in files_casefold), None)
+        if conflict is not None:
+            raise ValueError(
+                f"Generated ZIP file/directory path collision: {raw_name} is below file {conflict}"
+            )
+
+        for parent, folded_parent in zip(parents, folded_parents):
+            previous = prefix_spellings.get(folded_parent)
+            if previous is not None and previous != parent:
+                raise ValueError(f"Case-insensitive generated ZIP directory collision: {raw_name}")
+            prefix_spellings[folded_parent] = parent
+
+        if folded in prefix_spellings:
+            raise ValueError(f"Generated ZIP file/directory path collision: {raw_name}")
+
+        seen_casefold.add(folded)
+        files_casefold.add(folded)
+
+
+def _copy_stream_to_snapshot(stream, snapshot) -> tuple[str, int]:
+    """Hash and copy one bounded archive so parsing and extraction use immutable bytes."""
+    position = stream.tell()
+    digest = hashlib.sha256()
+    copied = 0
+    try:
+        stream.seek(0)
+        snapshot.seek(0)
+        snapshot.truncate(0)
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            copied += len(chunk)
+            if copied > MAX_ARCHIVE_BYTES:
+                raise ValueError(
+                    f"Original instance ZIP exceeds the compressed size limit ({MAX_ARCHIVE_BYTES} bytes)"
+                )
+            digest.update(chunk)
+            snapshot.write(chunk)
+        snapshot.flush()
+        snapshot.seek(0)
+        return digest.hexdigest(), copied
+    finally:
+        stream.seek(position)
+
+
+@contextlib.contextmanager
+def _open_snapshot_zip(path: pathlib.Path):
+    """Keep a verified source descriptor open and consume a disk-backed immutable snapshot."""
+    stream, metadata = _open_regular_file_no_follow(path, "Original instance ZIP")
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(stream)
+        if metadata.st_size > MAX_ARCHIVE_BYTES:
+            raise ValueError(
+                "Original instance ZIP exceeds the compressed size limit "
+                f"({MAX_ARCHIVE_BYTES} bytes)"
+            )
+        snapshot = stack.enter_context(tempfile.TemporaryFile(mode="w+b"))
+        archive_hash, archive_bytes = _copy_stream_to_snapshot(stream, snapshot)
+        if archive_bytes != metadata.st_size:
+            raise ValueError("Original instance ZIP size changed while creating its snapshot")
+        snapshot.seek(0)
+        try:
+            source = stack.enter_context(zipfile.ZipFile(snapshot))
+        except zipfile.BadZipFile as error:
+            raise ValueError(f"Missing or invalid original instance ZIP: {path}") from error
+        yield source, stream, metadata, archive_hash, archive_bytes
+
+
 def package(instance: pathlib.Path, binary: pathlib.Path, mods: pathlib.Path,
             target: str, horizon_commit: str, output: pathlib.Path) -> dict:
+    if target not in ("windows-x86_64", "linux-x86_64"):
+        raise ValueError(f"Unsupported native build target: {target!r}")
     if not instance.is_file():
         raise ValueError(f"Missing or invalid original instance ZIP: {instance}")
     if not binary.is_file():
@@ -171,6 +298,9 @@ def package(instance: pathlib.Path, binary: pathlib.Path, mods: pathlib.Path,
                 f"(symlinks and special files are refused): {candidate}"
             )
         mod_files.append(candidate)
+    _validate_portable_basename(binary.name, "Native client")
+    for mod in mod_files:
+        _validate_portable_basename(mod.name, "Native mod")
     _reject_output_aliases(output, [instance, binary, *mod_files])
 
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -183,63 +313,61 @@ def package(instance: pathlib.Path, binary: pathlib.Path, mods: pathlib.Path,
         # Keep the validated instance archive open through extraction and hash the
         # same file descriptor. Reopening the path after preflight permits a swap
         # between validation, manifest hashing and packaging.
-        with instance.open("rb") as instance_stream:
-            instance_before = os.fstat(instance_stream.fileno())
-            if not stat.S_ISREG(instance_before.st_mode):
-                raise ValueError(f"Original instance ZIP is not a regular file: {instance}")
-            if instance_before.st_size > MAX_ARCHIVE_BYTES:
-                raise ValueError(
-                    "Original instance ZIP exceeds the compressed size limit "
-                    f"({MAX_ARCHIVE_BYTES} bytes)"
+        with _open_snapshot_zip(instance) as (source, instance_stream, instance_before, instance_hash, instance_bytes):
+            members = list(safe_members(source))
+            if not members:
+                raise ValueError("Original instance ZIP is empty")
+            instance_files = [(info, name) for info, name in members if not _member_is_directory(info)]
+            if not instance_files:
+                raise ValueError("Original instance ZIP contains no files")
+
+            generated_paths = [
+                f"instances/{instance_id}/{name}" for _, name in instance_files
+            ]
+            generated_paths.extend(
+                [f"native-build/{target}/{binary.name}"]
+                + [f"build-inputs/mods/{mod.name}" for mod in mod_files]
+                + ["build-manifest.json", "README-INSTALL.txt"]
+            )
+            _validate_generated_zip_paths(generated_paths)
+
+            with contextlib.ExitStack() as stack:
+                binary_stream, binary_before = _open_regular_file_no_follow(
+                    binary, "Native client input"
                 )
-            try:
-                source = zipfile.ZipFile(instance_stream)
-            except zipfile.BadZipFile as error:
-                raise ValueError(f"Missing or invalid original instance ZIP: {instance}") from error
-            with source:
-                members = list(safe_members(source))
-                if not members:
-                    raise ValueError("Original instance ZIP is empty")
-                instance_files = [(info, name) for info, name in members if not info.is_dir()]
-                if not instance_files:
-                    raise ValueError("Original instance ZIP contains no files")
-                instance_hash = _sha256_stream(instance_stream)
+                stack.enter_context(binary_stream)
+                if not stat.S_ISREG(binary_before.st_mode) or binary_before.st_size == 0:
+                    raise ValueError(f"Missing or invalid native client binary: {binary}")
 
-                with contextlib.ExitStack() as stack:
-                    binary_stream = stack.enter_context(binary.open("rb"))
-                    binary_before = os.fstat(binary_stream.fileno())
-                    if not stat.S_ISREG(binary_before.st_mode) or binary_before.st_size == 0:
-                        raise ValueError(f"Missing or invalid native client binary: {binary}")
+                mod_inputs = []
+                for mod in mod_files:
+                    stream, metadata = _open_regular_file_no_follow(
+                        mod, "Native mod input"
+                    )
+                    stack.enter_context(stream)
+                    mod_inputs.append((mod, stream, metadata))
 
-                    mod_inputs = []
-                    for mod in mod_files:
-                        stream, metadata = _open_regular_file_no_follow(
-                            mod, "Native mod input"
-                        )
-                        stack.enter_context(stream)
-                        mod_inputs.append((mod, stream, metadata))
-
-                    manifest = {
-                        "schema": 2,
-                        "package": "Horizon drop-in instance",
-                        "target": target,
-                        "horizon_commit": horizon_commit,
-                        "instance": {
-                            "id": instance_id,
-                            "relative_path": f"instances/{instance_id}",
-                            "source_archive_sha256": instance_hash,
-                            "source_archive_bytes": instance_before.st_size,
-                            "files": len(instance_files),
-                        },
-                        "native_client": {
-                            "path": f"native-build/{target}/{binary.name}",
-                            "sha256": None,
-                            "bytes": binary_before.st_size,
-                            "imported_version_prefix": "imported-",
-                        },
-                        "mods": [],
-                    }
-                    instructions = f"""Horizon drop-in instance
+                manifest = {
+                    "schema": 2,
+                    "package": "Horizon drop-in instance",
+                    "target": target,
+                    "horizon_commit": horizon_commit,
+                    "instance": {
+                        "id": instance_id,
+                        "relative_path": f"instances/{instance_id}",
+                        "source_archive_sha256": instance_hash,
+                        "source_archive_bytes": instance_bytes,
+                        "files": len(instance_files),
+                    },
+                    "native_client": {
+                        "path": f"native-build/{target}/{binary.name}",
+                        "sha256": None,
+                        "bytes": binary_before.st_size,
+                        "imported_version_prefix": "imported-",
+                    },
+                    "mods": [],
+                }
+                instructions = f"""Horizon drop-in instance
 
 Target: {target}
 Horizon source: {horizon_commit}
@@ -266,74 +394,74 @@ The original instance ZIP is unpacked without changing file contents. Its archiv
 the native executable checksum, and mod input checksums are recorded in build-manifest.json.
 Native builds execute with your user permissions. Only import builds and mods you trust.
 """
-                    previous_mode = (
-                        stat.S_IMODE(output.stat().st_mode)
-                        if output.exists() and output.is_file()
-                        else None
-                    )
-                    try:
-                        with zipfile.ZipFile(
-                            temporary, "w", compression=zipfile.ZIP_DEFLATED,
-                            compresslevel=6, allowZip64=True
-                        ) as archive:
-                            for info, name in members:
-                                if info.is_dir():
-                                    continue
-                                _copy_zip_member_to_zip(
-                                    archive, f"instances/{instance_id}/{name}", source, info
-                                )
-
-                            binary_hash, binary_bytes = _copy_stream_to_zip(
-                                archive, manifest["native_client"]["path"],
-                                binary_stream, binary_before
+                previous_mode = (
+                    stat.S_IMODE(output.stat().st_mode)
+                    if output.exists() and output.is_file()
+                    else None
+                )
+                try:
+                    with zipfile.ZipFile(
+                        temporary, "w", compression=zipfile.ZIP_DEFLATED,
+                        compresslevel=6, allowZip64=True
+                    ) as archive:
+                        for info, name in members:
+                            if _member_is_directory(info):
+                                continue
+                            _copy_zip_member_to_zip(
+                                archive, f"instances/{instance_id}/{name}", source, info
                             )
-                            if _file_identity(binary_before) != _file_identity(
-                                os.fstat(binary_stream.fileno())
-                            ):
-                                raise ValueError(f"Native client changed while packaging: {binary}")
-                            manifest["native_client"]["sha256"] = binary_hash
-                            manifest["native_client"]["bytes"] = binary_bytes
 
-                            for mod, stream, before in mod_inputs:
-                                mod_hash, mod_bytes = _copy_stream_to_zip(
-                                    archive, f"build-inputs/mods/{mod.name}", stream, before
-                                )
-                                if _file_identity(before) != _file_identity(os.fstat(stream.fileno())):
-                                    raise ValueError(f"Native mod changed while packaging: {mod}")
-                                manifest["mods"].append({
-                                    "file": mod.name, "sha256": mod_hash, "bytes": mod_bytes
-                                })
+                        binary_hash, binary_bytes = _copy_stream_to_zip(
+                            archive, manifest["native_client"]["path"],
+                            binary_stream, binary_before
+                        )
+                        if _file_identity(binary_before) != _file_identity(
+                            os.fstat(binary_stream.fileno())
+                        ):
+                            raise ValueError(f"Native client changed while packaging: {binary}")
+                        manifest["native_client"]["sha256"] = binary_hash
+                        manifest["native_client"]["bytes"] = binary_bytes
 
-                            if _file_identity(instance_before) != _file_identity(
-                                os.fstat(instance_stream.fileno())
-                            ):
-                                raise ValueError(f"Original instance ZIP changed while packaging: {instance}")
-
-                            archive.writestr(
-                                "build-manifest.json",
-                                json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+                        for mod, stream, before in mod_inputs:
+                            mod_hash, mod_bytes = _copy_stream_to_zip(
+                                archive, f"build-inputs/mods/{mod.name}", stream, before
                             )
-                            archive.writestr("README-INSTALL.txt", instructions)
+                            if _file_identity(before) != _file_identity(os.fstat(stream.fileno())):
+                                raise ValueError(f"Native mod changed while packaging: {mod}")
+                            manifest["mods"].append({
+                                "file": mod.name, "sha256": mod_hash, "bytes": mod_bytes
+                            })
 
-                        with zipfile.ZipFile(temporary) as archive:
-                            bad = archive.testzip()
-                            if bad:
-                                raise ValueError(f"Packaged ZIP failed CRC verification at {bad}")
-                            required = {
-                                f"instances/{instance_id}/" + instance_files[0][1],
-                                manifest["native_client"]["path"],
-                                "build-manifest.json",
-                                "README-INSTALL.txt",
-                            }
-                            missing = required.difference(archive.namelist())
-                            if missing:
-                                raise ValueError(f"Package is missing required entries: {sorted(missing)}")
-                        # Keep existing output permissions when replacing a verified bundle.
-                        if previous_mode is not None and os.name != "nt":
-                            os.chmod(temporary, previous_mode)
-                        os.replace(temporary, output)
-                    finally:
-                        temporary.unlink(missing_ok=True)
+                        if _file_identity(instance_before) != _file_identity(
+                            os.fstat(instance_stream.fileno())
+                        ):
+                            raise ValueError(f"Original instance ZIP changed while packaging: {instance}")
+
+                        archive.writestr(
+                            "build-manifest.json",
+                            json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+                        )
+                        archive.writestr("README-INSTALL.txt", instructions)
+
+                    with zipfile.ZipFile(temporary) as archive:
+                        bad = archive.testzip()
+                        if bad:
+                            raise ValueError(f"Packaged ZIP failed CRC verification at {bad}")
+                        required = {
+                            f"instances/{instance_id}/" + instance_files[0][1],
+                            manifest["native_client"]["path"],
+                            "build-manifest.json",
+                            "README-INSTALL.txt",
+                        }
+                        missing = required.difference(archive.namelist())
+                        if missing:
+                            raise ValueError(f"Package is missing required entries: {sorted(missing)}")
+                    # Keep existing output permissions when replacing a verified bundle.
+                    if previous_mode is not None and os.name != "nt":
+                        os.chmod(temporary, previous_mode)
+                    os.replace(temporary, output)
+                finally:
+                    temporary.unlink(missing_ok=True)
         return manifest
     finally:
         temporary.unlink(missing_ok=True)
