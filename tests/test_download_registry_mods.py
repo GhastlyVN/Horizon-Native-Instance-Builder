@@ -1,13 +1,34 @@
 import hashlib
 import io
 import json
+import struct
 import unittest
+from unittest.mock import patch
 import zipfile
 
 from scripts.download_registry_mods import choose_versions, validate_bundle
 
 
 class RegistryModSelectionTests(unittest.TestCase):
+    def make_bundle(self, extra_entries=()):
+        payload = io.BytesIO()
+        with zipfile.ZipFile(payload, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("horizon-native.json", json.dumps({
+                "id": "sample", "version": "1.2.0", "game": "26.3"
+            }))
+            archive.writestr("mixins/sample/horizon-mixin.toml", '[mod]\\nid = "sample"\\n')
+            for name, content in extra_entries:
+                archive.writestr(name, content)
+        data = payload.getvalue()
+        expected = {
+            "id": "sample",
+            "version": "1.2.0",
+            "game": "26.3",
+            "size": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+        }
+        return data, expected
+
     def make_index(self, published="2026-11-08"):
         return {
             "projects": [{
@@ -75,6 +96,52 @@ class RegistryModSelectionTests(unittest.TestCase):
                 "26.3",
                 "1" * 40,
             )
+
+    def test_bundle_rejects_windows_reserved_paths(self):
+        data, expected = self.make_bundle((("CON.txt", b"reserved"),))
+        with self.assertRaisesRegex(ValueError, "Unsafe ZIP path"):
+            validate_bundle(data, expected)
+
+    def test_bundle_rejects_oversized_member_before_decompression(self):
+        data, expected = self.make_bundle((("large.bin", b"A" * 1024),))
+        with patch("scripts.download_registry_mods.MAX_BUNDLE_MEMBER_BYTES", 512):
+            with patch(
+                "scripts.download_registry_mods.zipfile.ZipFile.open",
+                side_effect=AssertionError("oversized member must be rejected before decompression"),
+            ):
+                with self.assertRaisesRegex(ValueError, "member exceeds the uncompressed size limit"):
+                    validate_bundle(data, expected)
+
+    def test_bundle_preflights_zip64_directory_before_zipfile_parsing(self):
+        central_directory = b"C" * 32
+        zip64_offset = len(central_directory)
+        zip64_record = struct.pack(
+            "<4sQ2H2I4Q",
+            b"PK\\\\x06\\\\x06",
+            44, 45, 45, 0, 0, 1, 1,
+            len(central_directory),
+            0,
+        )
+        locator = struct.pack("<4sIQI", b"PK\\\\x06\\\\x07", 0, zip64_offset, 1)
+        end_record = struct.pack(
+            "<4s4H2LH",
+            b"PK\\\\x05\\\\x06",
+            0, 0, 0xFFFF, 0xFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0,
+        )
+        data = central_directory + zip64_record + locator + end_record
+        expected = {
+            "id": "sample",
+            "size": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+        }
+
+        with patch("scripts.prepare.MAX_CENTRAL_DIRECTORY_BYTES", 16):
+            with patch(
+                "scripts.download_registry_mods.zipfile.ZipFile",
+                side_effect=AssertionError("ZIP64 directory must be bounded before parsing"),
+            ):
+                with self.assertRaisesRegex(ValueError, "central directory exceeds the size limit"):
+                    validate_bundle(data, expected)
 
     def test_bundle_manifest_must_match_registry(self):
         payload = io.BytesIO()
