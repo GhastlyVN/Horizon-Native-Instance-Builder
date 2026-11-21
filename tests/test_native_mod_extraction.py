@@ -449,5 +449,27 @@ class NativeModExtractionTests(unittest.TestCase):
 
 
 
+    def test_rejects_symlink_archive_input_before_zip_parsing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            archive = root / "sample.hnmod"
+            self._bundle(archive)
+            alias = root / "alias.hnmod"
+            try:
+                alias.symlink_to(archive)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"symlinks are unavailable: {error}")
+
+            destination = root / "out"
+            with patch(
+                "scripts.prepare.zipfile.ZipFile",
+                side_effect=AssertionError("symlink source must be rejected before ZIP parsing"),
+            ):
+                with self.assertRaisesRegex(ValueError, "regular non-symlink file"):
+                    extract_bundle(alias, destination)
+            self.assertFalse(destination.exists())
+
+
+
 if __name__ == "__main__":
     unittest.main()

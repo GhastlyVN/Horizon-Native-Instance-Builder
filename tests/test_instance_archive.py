@@ -951,5 +951,29 @@ class InstanceArchiveTests(unittest.TestCase):
 
 
 
+    def test_validator_and_extractor_reject_symlink_archive_before_zip_parse(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            archive = root / "source.zip"
+            with zipfile.ZipFile(archive, "w") as zf:
+                zf.writestr("game/versions/26.3/26.3.json", "{}")
+            alias = root / "alias.zip"
+            try:
+                alias.symlink_to(archive)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"symlinks are unavailable: {error}")
+
+            with patch(
+                "scripts.prepare.zipfile.ZipFile",
+                side_effect=AssertionError("symlink source must be rejected before ZIP parsing"),
+            ):
+                with self.assertRaisesRegex(ValueError, "regular non-symlink file"):
+                    validate_zip(alias)
+                with self.assertRaisesRegex(SystemExit, "regular non-symlink file"):
+                    extract_safe(alias, root / "out")
+            self.assertFalse((root / "out").exists())
+
+
+
 if __name__ == "__main__":
     unittest.main()

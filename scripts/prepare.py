@@ -206,12 +206,70 @@ def open_preflighted_zip(stream, archive_name="<open ZIP>"):
         yield archive
 
 
+def _file_identity(metadata):
+    identity = (metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns)
+    if os.name != "nt":
+        return (*identity, metadata.st_ctime_ns)
+    return identity
+
+
+def _metadata_is_link_or_reparse_point(metadata):
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        getattr(metadata, "st_file_attributes", 0) & 0x400
+    )
+
+
+@contextlib.contextmanager
+def open_regular_zip_source(path):
+    """Open one regular ZIP source without following links or accepting a path swap."""
+    path = pathlib.Path(path)
+    try:
+        path_before = path.lstat()
+    except OSError as error:
+        raise ValueError(f"ZIP archive is unavailable: {path}") from error
+    if _metadata_is_link_or_reparse_point(path_before) or not stat.S_ISREG(path_before.st_mode):
+        raise ValueError(f"ZIP archive must be a regular non-symlink file: {path}")
+
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise ValueError(f"ZIP archive could not be opened safely: {path}: {error}") from error
+
+    with os.fdopen(descriptor, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if (
+            _metadata_is_link_or_reparse_point(opened)
+            or not stat.S_ISREG(opened.st_mode)
+            or _file_identity(opened) != _file_identity(path_before)
+        ):
+            raise ValueError(f"ZIP archive changed while it was being opened: {path}")
+        if opened.st_size > MAX_ARCHIVE_BYTES:
+            raise ValueError(
+                "ZIP archive exceeds the compressed size limit "
+                f"({MAX_ARCHIVE_BYTES} bytes)"
+            )
+        try:
+            path_after = path.lstat()
+        except OSError as error:
+            raise ValueError(f"ZIP archive path changed while it was being opened: {path}") from error
+        if (
+            _metadata_is_link_or_reparse_point(path_after)
+            or not stat.S_ISREG(path_after.st_mode)
+            or _file_identity(path_after) != _file_identity(opened)
+        ):
+            raise ValueError(f"ZIP archive path changed while it was being opened: {path}")
+        yield stream
+
+
 def validate_minecraft_archive(path, names):
     """Validate real files and the asset-index references, not just directory names."""
     path = pathlib.Path(path)
     root = discover_minecraft_root(names)
     prefix = "" if root == "." else root.rstrip("/") + "/"
-    with path.open("rb") as stream, open_preflighted_zip(stream, path) as archive:
+    with open_regular_zip_source(path) as stream, open_preflighted_zip(stream, path) as archive:
         entries = {
             info.filename.replace(chr(92), "/"): info
             for info in archive.infolist()
@@ -474,29 +532,12 @@ def validate_zip(path):
     if isinstance(path, _ZIP_FILE_TYPE):
         return validate_zip_archive(path)
     path = pathlib.Path(path)
-    if not path.is_file():
-        raise ValueError(f"Not a ZIP archive: {path}")
-    # Open once and inspect the descriptor before ZipFile reads the central directory.
-    # O_NONBLOCK prevents a replaced FIFO from hanging the preflight on POSIX.
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
-        descriptor = os.open(path, flags)
-    except OSError as error:
-        raise ValueError(f"Could not open ZIP archive {path}: {error}") from error
-    with os.fdopen(descriptor, "rb") as stream:
-        metadata = os.fstat(stream.fileno())
-        if not stat.S_ISREG(metadata.st_mode):
-            raise ValueError(f"ZIP archive is not a regular file: {path}")
-        if metadata.st_size > MAX_ARCHIVE_BYTES:
-            raise ValueError(
-                "ZIP archive exceeds the compressed size limit "
-                f"({MAX_ARCHIVE_BYTES} bytes)"
-            )
-        try:
-            with open_preflighted_zip(stream, path) as z:
-                return validate_zip_archive(z)
-        except zipfile.BadZipFile as error:
-            raise ValueError(f"Not a ZIP archive: {path}") from error
+        with open_regular_zip_source(path) as stream:
+            with open_preflighted_zip(stream, path) as archive:
+                return validate_zip_archive(archive)
+    except zipfile.BadZipFile as error:
+        raise ValueError(f"Not a ZIP archive: {path}") from error
 
 def main():
     ap = argparse.ArgumentParser()

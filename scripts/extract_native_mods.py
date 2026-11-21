@@ -20,7 +20,8 @@ try:
         MAX_MEMBER_UNCOMPRESSED_BYTES,
         MAX_TOTAL_UNCOMPRESSED_BYTES,
         WINDOWS_RESERVED_NAMES,
-        preflight_zip_stream,
+        open_preflighted_zip,
+        open_regular_zip_source,
         validate_zip,
     )
 except ModuleNotFoundError:  # direct execution: python scripts/extract_native_mods.py
@@ -30,7 +31,8 @@ except ModuleNotFoundError:  # direct execution: python scripts/extract_native_m
         MAX_MEMBER_UNCOMPRESSED_BYTES,
         MAX_TOTAL_UNCOMPRESSED_BYTES,
         WINDOWS_RESERVED_NAMES,
-        preflight_zip_stream,
+        open_preflighted_zip,
+        open_regular_zip_source,
         validate_zip,
     )
 
@@ -72,24 +74,13 @@ def _reject_duplicate_json_keys(pairs):
 
 @contextlib.contextmanager
 def _open_bounded_zip(archive_path: pathlib.Path):
-    """Bound and open the same archive descriptor before ZIP central-directory parsing."""
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
+    """Use the shared no-follow source and ZIP validation policy before extraction."""
     try:
-        descriptor = os.open(archive_path, flags)
-    except OSError as error:
-        raise ValueError(f"{archive_path}: could not open ZIP archive: {error}") from error
-    with os.fdopen(descriptor, "rb") as stream:
-        metadata = os.fstat(stream.fileno())
-        if not stat.S_ISREG(metadata.st_mode):
-            raise ValueError(f"{archive_path}: ZIP archive is not a regular file")
-        if metadata.st_size > MAX_ARCHIVE_BYTES:
-            raise ValueError(
-                f"{archive_path}: ZIP archive exceeds the compressed size limit "
-                f"({MAX_ARCHIVE_BYTES} bytes)"
-            )
-        preflight_zip_stream(stream, archive_path)
-        with zipfile.ZipFile(stream) as bundle:
-            yield bundle
+        with open_regular_zip_source(archive_path) as stream:
+            with open_preflighted_zip(stream, archive_path) as bundle:
+                yield bundle
+    except (zipfile.BadZipFile, ValueError) as error:
+        raise ValueError(f"{archive_path}: invalid ZIP archive: {error}") from error
 
 
 

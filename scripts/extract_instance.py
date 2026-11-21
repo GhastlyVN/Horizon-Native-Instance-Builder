@@ -9,9 +9,9 @@ import unicodedata
 import zipfile
 
 try:
-    from scripts.prepare import preflight_zip_stream, validate_zip_archive
+    from scripts.prepare import open_preflighted_zip, open_regular_zip_source, validate_zip_archive
 except ModuleNotFoundError:  # direct execution: python scripts/extract_instance.py
-    from prepare import preflight_zip_stream, validate_zip_archive
+    from prepare import open_preflighted_zip, open_regular_zip_source, validate_zip_archive
 
 MAX_ARCHIVE_BYTES = 9 * 1024**3
 MAX_ARCHIVE_ENTRIES = 100_000
@@ -163,37 +163,15 @@ def _validate_existing_destination_collisions(root, validated_entries):
 
 @contextlib.contextmanager
 def _open_bounded_zip(archive):
-    """Open one regular archive after bounding its compressed size, before ZIP parsing."""
+    """Use the shared no-follow source and ZIP validation policy before extraction."""
     archive = pathlib.Path(archive)
-    if not archive.is_file():
-        raise SystemExit(f"Not a ZIP archive: {archive}")
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
-        descriptor = os.open(archive, flags)
-    except OSError as error:
-        raise SystemExit(f"Could not open ZIP archive {archive}: {error}") from error
-    with os.fdopen(descriptor, "rb") as stream:
-        metadata = os.fstat(stream.fileno())
-        if not stat.S_ISREG(metadata.st_mode):
-            raise SystemExit(f"ZIP archive is not a regular file: {archive}")
-        if metadata.st_size > MAX_ARCHIVE_BYTES:
-            raise SystemExit(
-                "ZIP archive exceeds the compressed size limit "
-                f"({MAX_ARCHIVE_BYTES} bytes)"
-            )
-        try:
-            preflight_zip_stream(stream, archive)
-            zf = zipfile.ZipFile(stream)
-        except (zipfile.BadZipFile, ValueError) as error:
-            raise SystemExit(f"Invalid ZIP archive {archive}: {error}") from error
-        # Keep parse-time error conversion separate from extraction. A BadZipFile
-        # raised while streaming a member must reach extract_safe's rollback path.
-        with zf:
-            try:
+        with open_regular_zip_source(archive) as stream:
+            with open_preflighted_zip(stream, archive) as zf:
                 validate_zip_archive(zf)
-            except ValueError as error:
-                raise SystemExit(str(error)) from error
-            yield zf
+                yield zf
+    except (zipfile.BadZipFile, ValueError) as error:
+        raise SystemExit(f"Invalid ZIP archive {archive}: {error}") from error
 
 
 def _file_identity(metadata):
