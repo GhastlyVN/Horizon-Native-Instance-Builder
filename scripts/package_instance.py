@@ -18,6 +18,7 @@ if __package__:
         MAX_PATH_UTF8_BYTES,
         _collision_key,
         _portable_windows_component,
+        preflight_zip_stream,
         validate_zip_archive,
     )
 else:  # Executed as `python scripts/package_instance.py`.
@@ -257,6 +258,7 @@ def _open_snapshot_zip(path: pathlib.Path):
         if archive_bytes != metadata.st_size:
             raise ValueError("Original instance ZIP size changed while creating its snapshot")
         snapshot.seek(0)
+        preflight_zip_stream(snapshot, path)
         try:
             source = stack.enter_context(zipfile.ZipFile(snapshot))
         except zipfile.BadZipFile as error:
