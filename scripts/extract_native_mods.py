@@ -15,7 +15,6 @@ import zipfile
 
 try:
     from scripts.prepare import (
-        MAX_ARCHIVE_BYTES,
         MAX_ARCHIVE_ENTRIES,
         MAX_MEMBER_UNCOMPRESSED_BYTES,
         MAX_TOTAL_UNCOMPRESSED_BYTES,

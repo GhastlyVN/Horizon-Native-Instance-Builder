@@ -13,7 +13,6 @@ try:
 except ModuleNotFoundError:  # direct execution: python scripts/extract_instance.py
     from prepare import open_preflighted_zip, open_regular_zip_source, validate_zip_archive
 
-MAX_ARCHIVE_BYTES = 9 * 1024**3
 MAX_ARCHIVE_ENTRIES = 100_000
 MAX_MEMBER_UNCOMPRESSED_BYTES = 2 * 1024**3
 MAX_TOTAL_UNCOMPRESSED_BYTES = 8 * 1024**3
