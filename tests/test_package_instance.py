@@ -54,6 +54,16 @@ class PackageInstanceTests(unittest.TestCase):
                 )
                 self.assertNotIn("instance/instance.zip", archive.namelist())
                 manifest = json.loads(archive.read("build-manifest.json"))
+                self.assertEqual(manifest["schema"], 2)
+                self.assertEqual(manifest["horizon_commit"], "a" * 40)
+                self.assertEqual(
+                    manifest["instance"]["relative_path"],
+                    f"instances/{instance_id}",
+                )
+                self.assertEqual(
+                    manifest["instance"]["source_archive_sha256"],
+                    hashlib.sha256(instance.read_bytes()).hexdigest(),
+                )
                 self.assertEqual(
                     manifest["native_client"]["sha256"],
                     hashlib.sha256(binary.read_bytes()).hexdigest(),
