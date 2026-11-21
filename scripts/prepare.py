@@ -208,6 +208,7 @@ def open_preflighted_zip(stream, archive_name="<open ZIP>"):
 
 def validate_minecraft_archive(path, names):
     """Validate real files and the asset-index references, not just directory names."""
+    path = pathlib.Path(path)
     root = discover_minecraft_root(names)
     prefix = "" if root == "." else root.rstrip("/") + "/"
     with path.open("rb") as stream, open_preflighted_zip(stream, path) as archive:
