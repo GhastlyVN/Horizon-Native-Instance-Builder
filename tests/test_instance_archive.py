@@ -897,24 +897,31 @@ class InstanceArchiveTests(unittest.TestCase):
     def test_preflight_rejects_oversized_zip64_central_directory_before_zipfile(self):
         with tempfile.TemporaryDirectory() as temp:
             archive = pathlib.Path(temp) / "oversized-zip64-central-directory.zip"
+            # Keep the fixture small: patch the limit and use a structurally
+            # valid ZIP64 layout (central directory ends where the ZIP64
+            # EOCD record begins), so zipfile's consistency checks pass and
+            # our own size check is what rejects it.
+            central_directory = b"C" * 32
+            zip64_offset = len(central_directory)
             zip64_record = struct.pack(
                 "<4sQ2H2I4Q",
                 b"PK\x06\x06",
-                44, 45, 45, 0, 0, 0, 0,
-                MAX_CENTRAL_DIRECTORY_BYTES + 1,
+                44, 45, 45, 0, 0, 0, 1, 1,
+                len(central_directory),
                 0,
             )
-            locator = struct.pack("<4sIQI", b"PK\x06\x07", 0, 0, 1)
+            locator = struct.pack("<4sIQI", b"PK\x06\x07", 0, zip64_offset, 1)
             end_record = struct.pack(
                 "<4s4H2LH",
                 b"PK\x05\x06",
                 0, 0, 0xFFFF, 0xFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0,
             )
-            archive.write_bytes(zip64_record + locator + end_record)
+            archive.write_bytes(central_directory + zip64_record + locator + end_record)
 
-            with archive.open("rb") as stream:
-                with self.assertRaisesRegex(ValueError, "central directory exceeds the size limit"):
-                    preflight_zip_stream(stream, archive)
+            with patch("scripts.prepare.MAX_CENTRAL_DIRECTORY_BYTES", 16):
+                with archive.open("rb") as stream:
+                    with self.assertRaisesRegex(ValueError, "central directory exceeds the size limit"):
+                        preflight_zip_stream(stream, archive)
 
 
     def test_extractor_rejects_oversized_central_directory_before_zipfile(self):
