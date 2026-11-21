@@ -39,17 +39,6 @@ def _file_identity(metadata):
     )
 
 
-def _sha256_stream(stream) -> str:
-    """Hash one already-open input without resolving its path a second time."""
-    position = stream.tell()
-    digest = hashlib.sha256()
-    stream.seek(0)
-    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-        digest.update(chunk)
-    stream.seek(position)
-    return digest.hexdigest()
-
-
 def _copy_zip_member_to_zip(archive, arcname: str, source, info) -> None:
     """Stream a validated source member; ZipExtFile verifies its CRC at EOF."""
     target_info = zipfile.ZipInfo(arcname)
@@ -310,9 +299,10 @@ def package(instance: pathlib.Path, binary: pathlib.Path, mods: pathlib.Path,
     os.close(descriptor)
     temporary = pathlib.Path(temporary_name)
     try:
-        # Keep the validated instance archive open through extraction and hash the
-        # same file descriptor. Reopening the path after preflight permits a swap
-        # between validation, manifest hashing and packaging.
+        # Snapshot the exact input bytes once; hash and ZIP extraction both consume
+        # that immutable snapshot, while the original descriptor remains open for
+        # identity checks. This prevents same-size in-place rewrites from splitting
+        # the manifest hash and packaged member contents.
         with _open_snapshot_zip(instance) as (source, instance_stream, instance_before, instance_hash, instance_bytes):
             members = list(safe_members(source))
             if not members:
