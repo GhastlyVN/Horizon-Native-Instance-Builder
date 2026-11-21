@@ -447,7 +447,7 @@ class InstanceArchiveTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "compressed size limit"):
                         validate_zip(archive)
 
-            with patch("scripts.extract_instance.MAX_ARCHIVE_BYTES", 1):
+            with patch("scripts.prepare.MAX_ARCHIVE_BYTES", 1):
                 with patch(
                     "scripts.extract_instance.zipfile.ZipFile",
                     side_effect=AssertionError("extractor parsed an oversized archive"),

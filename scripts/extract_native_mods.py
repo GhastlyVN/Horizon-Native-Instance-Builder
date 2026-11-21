@@ -19,19 +19,18 @@ try:
         MAX_MEMBER_UNCOMPRESSED_BYTES,
         MAX_TOTAL_UNCOMPRESSED_BYTES,
         WINDOWS_RESERVED_NAMES,
-        open_preflighted_zip,
         open_regular_zip_source,
+        preflight_zip_stream,
         validate_zip,
     )
 except ModuleNotFoundError:  # direct execution: python scripts/extract_native_mods.py
     from prepare import (
-        MAX_ARCHIVE_BYTES,
         MAX_ARCHIVE_ENTRIES,
         MAX_MEMBER_UNCOMPRESSED_BYTES,
         MAX_TOTAL_UNCOMPRESSED_BYTES,
         WINDOWS_RESERVED_NAMES,
-        open_preflighted_zip,
         open_regular_zip_source,
+        preflight_zip_stream,
         validate_zip,
     )
 
@@ -73,13 +72,19 @@ def _reject_duplicate_json_keys(pairs):
 
 @contextlib.contextmanager
 def _open_bounded_zip(archive_path: pathlib.Path):
-    """Use the shared no-follow source and ZIP validation policy before extraction."""
-    try:
-        with open_regular_zip_source(archive_path) as stream:
-            with open_preflighted_zip(stream, archive_path) as bundle:
-                yield bundle
-    except (zipfile.BadZipFile, ValueError) as error:
-        raise ValueError(f"{archive_path}: invalid ZIP archive: {error}") from error
+    """Use the shared no-follow source and ZIP preflight policy before extraction."""
+    with contextlib.ExitStack() as stack:
+        try:
+            stream = stack.enter_context(open_regular_zip_source(archive_path))
+        except ValueError as error:
+            raise ValueError(f"{archive_path}: invalid ZIP archive: {error}") from error
+        try:
+            preflight_zip_stream(stream, archive_path)
+            bundle = zipfile.ZipFile(stream)
+        except (OSError, zipfile.BadZipFile, ValueError) as error:
+            raise ValueError(f"{archive_path}: invalid ZIP archive: {error}") from error
+        with bundle:
+            yield bundle
 
 
 

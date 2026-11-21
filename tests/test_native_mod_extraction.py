@@ -380,7 +380,7 @@ class NativeModExtractionTests(unittest.TestCase):
             destination = root / "out"
 
             with (
-                patch("scripts.extract_native_mods.MAX_ARCHIVE_BYTES", 1),
+                patch("scripts.prepare.MAX_ARCHIVE_BYTES", 1),
                 patch(
                     "scripts.extract_native_mods.zipfile.ZipFile",
                     side_effect=AssertionError("oversized archive must not be parsed"),

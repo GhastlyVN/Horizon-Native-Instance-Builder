@@ -9,9 +9,9 @@ import unicodedata
 import zipfile
 
 try:
-    from scripts.prepare import open_preflighted_zip, open_regular_zip_source, validate_zip_archive
+    from scripts.prepare import open_regular_zip_source, preflight_zip_stream, validate_zip_archive
 except ModuleNotFoundError:  # direct execution: python scripts/extract_instance.py
-    from prepare import open_preflighted_zip, open_regular_zip_source, validate_zip_archive
+    from prepare import open_regular_zip_source, preflight_zip_stream, validate_zip_archive
 
 MAX_ARCHIVE_ENTRIES = 100_000
 MAX_MEMBER_UNCOMPRESSED_BYTES = 2 * 1024**3
@@ -164,13 +164,24 @@ def _validate_existing_destination_collisions(root, validated_entries):
 def _open_bounded_zip(archive):
     """Use the shared no-follow source and ZIP validation policy before extraction."""
     archive = pathlib.Path(archive)
-    try:
-        with open_regular_zip_source(archive) as stream:
-            with open_preflighted_zip(stream, archive) as zf:
+    with contextlib.ExitStack() as stack:
+        try:
+            stream = stack.enter_context(open_regular_zip_source(archive))
+        except ValueError as error:
+            raise SystemExit(f"Invalid ZIP archive {archive}: {error}") from error
+        try:
+            preflight_zip_stream(stream, archive)
+            zf = zipfile.ZipFile(stream)
+        except (OSError, zipfile.BadZipFile, ValueError) as error:
+            raise SystemExit(f"Invalid ZIP archive {archive}: {error}") from error
+        with zf:
+            try:
                 validate_zip_archive(zf)
-                yield zf
-    except (zipfile.BadZipFile, ValueError) as error:
-        raise SystemExit(f"Invalid ZIP archive {archive}: {error}") from error
+            except ValueError as error:
+                raise SystemExit(str(error)) from error
+            # Keep member-read failures outside the parse-time conversion so the
+            # extraction rollback handler receives the original exception.
+            yield zf
 
 
 def _file_identity(metadata):
