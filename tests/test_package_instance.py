@@ -16,6 +16,30 @@ from scripts.prepare import MAX_CENTRAL_DIRECTORY_BYTES
 
 
 class PackageInstanceTests(unittest.TestCase):
+    def test_windows_component_policy_is_platform_independent(self):
+        invalid = (
+            "CON",
+            "con.hnmod",
+            "PRN.exe",
+            "AUX",
+            "NUL.txt",
+            "COM1.hnmod",
+            "LPT9.exe",
+            "COM¹.txt",
+            "LPT³",
+            "stream:payload",
+            "trailing.",
+            "trailing ",
+        )
+        for name in invalid:
+            with self.subTest(name=name):
+                self.assertFalse(package_instance._portable_windows_component(name))
+
+        valid = ("horizon-client.exe", "COM0.hnmod", "COM10.hnmod", "ordinary.hnmod")
+        for name in valid:
+            with self.subTest(name=name):
+                self.assertTrue(package_instance._portable_windows_component(name))
+
     def test_package_contains_a_real_drop_in_instance_directory(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
