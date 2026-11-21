@@ -3,6 +3,7 @@ import json
 import os
 import pathlib
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -11,7 +12,7 @@ import zipfile
 from unittest.mock import patch
 
 from scripts.extract_native_mods import MAX_MANIFEST_BYTES, extract_bundle, main
-from scripts.prepare import validate_zip
+from scripts.prepare import MAX_CENTRAL_DIRECTORY_BYTES, validate_zip
 
 
 class NativeModExtractionTests(unittest.TestCase):
@@ -418,6 +419,33 @@ class NativeModExtractionTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue((destination / "sample" / "horizon-native.json").is_file())
             self.assertTrue((destination / "sample" / "mixins/sample_mod/horizon-mixin.toml").is_file())
+
+
+
+    def test_rejects_oversized_central_directory_before_zip_parsing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            archive = root / "sample.hnmod"
+            archive.write_bytes(
+                struct.pack(
+                    "<4s4H2LH",
+                    b"PK\\x05\\x06",
+                    0, 0, 0, 0,
+                    MAX_CENTRAL_DIRECTORY_BYTES + 1,
+                    0, 0,
+                )
+            )
+            destination = root / "out"
+
+            with patch.object(
+                zipfile,
+                "ZipFile",
+                side_effect=AssertionError("native importer must preflight before ZIP parsing"),
+            ):
+                with self.assertRaisesRegex(ValueError, "central directory exceeds the size limit"):
+                    extract_bundle(archive, destination)
+
+            self.assertFalse(destination.exists())
 
 
 
