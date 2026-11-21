@@ -3,6 +3,7 @@ import json
 import os
 import pathlib
 import stat
+import struct
 import subprocess
 import tempfile
 from types import SimpleNamespace
@@ -13,6 +14,8 @@ import zipfile
 from scripts.prepare import (
     _portable_windows_component as prepare_portable_windows_component,
     discover_minecraft_root,
+    MAX_CENTRAL_DIRECTORY_BYTES,
+    preflight_zip_stream,
     validate_minecraft_archive,
     validate_minecraft_layout,
     validate_zip,
@@ -866,6 +869,78 @@ class InstanceArchiveTests(unittest.TestCase):
 
             self.assertFalse(destination.exists())
             self.assertFalse((root / "game").exists())
+
+
+
+    def test_preflight_rejects_oversized_standard_central_directory_before_zipfile(self):
+        with tempfile.TemporaryDirectory() as temp:
+            archive = pathlib.Path(temp) / "oversized-central-directory.zip"
+            archive.write_bytes(
+                struct.pack(
+                    "<4s4H2LH",
+                    b"PK\\x05\\x06",
+                    0, 0, 0, 0,
+                    MAX_CENTRAL_DIRECTORY_BYTES + 1,
+                    0, 0,
+                )
+            )
+
+            with patch.object(
+                zipfile,
+                "ZipFile",
+                side_effect=AssertionError("central directory must be bounded before parsing"),
+            ):
+                with self.assertRaisesRegex(ValueError, "central directory exceeds the size limit"):
+                    validate_zip(archive)
+
+
+    def test_preflight_rejects_oversized_zip64_central_directory_before_zipfile(self):
+        with tempfile.TemporaryDirectory() as temp:
+            archive = pathlib.Path(temp) / "oversized-zip64-central-directory.zip"
+            zip64_record = struct.pack(
+                "<4sQ2H2I4Q",
+                b"PK\\x06\\x06",
+                44, 45, 45, 0, 0, 0, 0,
+                MAX_CENTRAL_DIRECTORY_BYTES + 1,
+                0,
+            )
+            locator = struct.pack("<4sIQI", b"PK\\x06\\x07", 0, 0, 1)
+            end_record = struct.pack(
+                "<4s4H2LH",
+                b"PK\\x05\\x06",
+                0, 0, 0xFFFF, 0xFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0,
+            )
+            archive.write_bytes(zip64_record + locator + end_record)
+
+            with archive.open("rb") as stream:
+                with self.assertRaisesRegex(ValueError, "central directory exceeds the size limit"):
+                    preflight_zip_stream(stream, archive)
+
+
+    def test_extractor_rejects_oversized_central_directory_before_zipfile(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            archive = root / "oversized-central-directory.zip"
+            archive.write_bytes(
+                struct.pack(
+                    "<4s4H2LH",
+                    b"PK\\x05\\x06",
+                    0, 0, 0, 0,
+                    MAX_CENTRAL_DIRECTORY_BYTES + 1,
+                    0, 0,
+                )
+            )
+            destination = root / "out"
+
+            with patch.object(
+                zipfile,
+                "ZipFile",
+                side_effect=AssertionError("extractor must preflight before ZIP parsing"),
+            ):
+                with self.assertRaisesRegex(SystemExit, "central directory exceeds the size limit"):
+                    extract_safe(archive, destination)
+
+            self.assertFalse(destination.exists())
 
 
 
