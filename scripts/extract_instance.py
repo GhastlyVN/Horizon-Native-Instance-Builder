@@ -8,6 +8,11 @@ import stat
 import unicodedata
 import zipfile
 
+try:
+    from scripts.prepare import preflight_zip_stream, validate_zip_archive
+except ModuleNotFoundError:  # direct execution: python scripts/extract_instance.py
+    from prepare import preflight_zip_stream, validate_zip_archive
+
 MAX_ARCHIVE_BYTES = 9 * 1024**3
 MAX_ARCHIVE_ENTRIES = 100_000
 MAX_MEMBER_UNCOMPRESSED_BYTES = 2 * 1024**3
@@ -177,12 +182,17 @@ def _open_bounded_zip(archive):
                 f"({MAX_ARCHIVE_BYTES} bytes)"
             )
         try:
+            preflight_zip_stream(stream, archive)
             zf = zipfile.ZipFile(stream)
-        except zipfile.BadZipFile as error:
-            raise SystemExit(f"Not a ZIP archive: {archive}") from error
+        except (zipfile.BadZipFile, ValueError) as error:
+            raise SystemExit(f"Invalid ZIP archive {archive}: {error}") from error
         # Keep parse-time error conversion separate from extraction. A BadZipFile
         # raised while streaming a member must reach extract_safe's rollback path.
         with zf:
+            try:
+                validate_zip_archive(zf)
+            except ValueError as error:
+                raise SystemExit(str(error)) from error
             yield zf
 
 
