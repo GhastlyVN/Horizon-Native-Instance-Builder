@@ -28,6 +28,7 @@ else:  # Executed as `python scripts/package_instance.py`.
         MAX_PATH_UTF8_BYTES,
         _collision_key,
         _portable_windows_component,
+        preflight_zip_stream,
         validate_zip_archive,
     )
 
