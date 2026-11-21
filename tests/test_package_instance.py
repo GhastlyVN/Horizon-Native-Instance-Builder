@@ -363,6 +363,151 @@ class PackageInstanceTests(unittest.TestCase):
 
 
 
+    @unittest.skipIf(os.name == "nt", "in-place mutation semantics differ on Windows")
+    def test_package_uses_hashed_snapshot_when_archive_is_mutated_in_place(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            instance, binary, mods, _ = self._inputs(root)
+            original_archive = instance.read_bytes()
+            original_mtime = instance.stat().st_mtime_ns
+            replacement = root / "replacement.zip"
+            with zipfile.ZipFile(replacement, "w") as archive:
+                archive.writestr("saves/world/level.dat", b"other")
+            replacement_bytes = replacement.read_bytes()
+            self.assertEqual(len(replacement_bytes), len(original_archive))
+
+            output = root / "bundle.zip"
+            real_copy = package_instance._copy_zip_member_to_zip
+            mutated = False
+
+            def mutate_source_before_copy(archive, arcname, source, info):
+                nonlocal mutated
+                if not mutated:
+                    with instance.open("r+b") as stream:
+                        stream.seek(0)
+                        stream.write(replacement_bytes)
+                        stream.truncate()
+                    os.utime(instance, ns=(original_mtime, original_mtime))
+                    mutated = True
+                return real_copy(archive, arcname, source, info)
+
+            with patch.object(
+                package_instance,
+                "_copy_zip_member_to_zip",
+                side_effect=mutate_source_before_copy,
+            ):
+                result = package(
+                    instance, binary, mods, "windows-x86_64", "9" * 40, output
+                )
+
+            self.assertTrue(mutated)
+            instance_id = result["instance"]["id"]
+            with zipfile.ZipFile(output) as archive:
+                self.assertEqual(
+                    archive.read(f"instances/{instance_id}/saves/world/level.dat"),
+                    b"world",
+                )
+            self.assertEqual(
+                result["instance"]["source_archive_sha256"],
+                hashlib.sha256(original_archive).hexdigest(),
+            )
+            self.assertEqual(instance.read_bytes(), replacement_bytes)
+
+
+    def test_package_skips_backslash_normalized_directory_entries(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            instance = root / "instance.zip"
+            with zipfile.ZipFile(instance, "w") as archive:
+                archive.writestr("game\\saves\\", b"")
+                archive.writestr("game\\saves\\world.dat", b"world")
+            binary = root / "horizon-client.exe"
+            binary.write_bytes(b"test executable")
+            mods = root / "mods"
+            mods.mkdir()
+            output = root / "bundle.zip"
+
+            result = package(
+                instance, binary, mods, "windows-x86_64", "a" * 40, output
+            )
+            instance_id = result["instance"]["id"]
+            with zipfile.ZipFile(output) as archive:
+                names = archive.namelist()
+                self.assertIn(
+                    f"instances/{instance_id}/game/saves/world.dat", names
+                )
+                self.assertNotIn(f"instances/{instance_id}/game/saves", names)
+                self.assertEqual(
+                    archive.read(f"instances/{instance_id}/game/saves/world.dat"),
+                    b"world",
+                )
+            self.assertEqual(result["instance"]["files"], 1)
+
+
+    @unittest.skipIf(os.name == "nt", "case-colliding filenames cannot coexist on Windows")
+    def test_package_rejects_casefold_colliding_native_mod_filenames(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            instance, binary, mods, _ = self._inputs(root)
+            (mods / "Example.hnmod").write_bytes(b"second native mod")
+            output = root / "bundle.zip"
+
+            with self.assertRaisesRegex(
+                ValueError, "Case-insensitive generated ZIP path collision"
+            ):
+                package(
+                    instance, binary, mods, "windows-x86_64", "b" * 40, output
+                )
+            self.assertFalse(output.exists())
+            self.assertEqual(list(root.glob(".bundle.zip.*.tmp")), [])
+
+
+    @unittest.skipIf(os.name == "nt", "Windows reserves CON as a device name")
+    def test_package_rejects_reserved_native_mod_filename(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            instance, binary, mods, _ = self._inputs(root)
+            (mods / "CON.hnmod").write_bytes(b"reserved native mod name")
+            output = root / "bundle.zip"
+
+            with self.assertRaisesRegex(ValueError, "non-portable filename"):
+                package(
+                    instance, binary, mods, "windows-x86_64", "c" * 40, output
+                )
+            self.assertFalse(output.exists())
+
+
+    def test_package_rejects_unsupported_target_before_writing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            instance, binary, mods, _ = self._inputs(root)
+            output = root / "bundle.zip"
+
+            with self.assertRaisesRegex(ValueError, "Unsupported native build target"):
+                package(instance, binary, mods, "../escape", "d" * 40, output)
+
+            self.assertFalse(output.exists())
+
+
+    @unittest.skipIf(os.name == "nt", "Windows reserves CON as a device name")
+    def test_package_rejects_reserved_native_client_filename(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            instance, binary, mods, _ = self._inputs(root)
+            binary.unlink()
+            binary = root / "CON.exe"
+            binary.write_bytes(b"test executable")
+            output = root / "bundle.zip"
+
+            with self.assertRaisesRegex(ValueError, "non-portable filename"):
+                package(
+                    instance, binary, mods, "windows-x86_64", "e" * 40, output
+                )
+
+            self.assertFalse(output.exists())
+
+
+
 
 if __name__ == "__main__":
     unittest.main()
