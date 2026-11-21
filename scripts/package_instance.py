@@ -138,9 +138,9 @@ def _open_regular_file_no_follow(path: pathlib.Path, description: str):
         before = path.lstat()
     except OSError as error:
         raise ValueError(f"{description} is unavailable: {path}") from error
-    if not stat.S_ISREG(before.st_mode):
+    if _metadata_is_link_or_reparse_point(before) or not stat.S_ISREG(before.st_mode):
         raise ValueError(
-            f"{description} must be a regular file (symlinks and special files are refused): {path}"
+            f"{description} must be a regular file without symlinks or reparse points: {path}"
         )
 
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
@@ -161,7 +161,9 @@ def _open_regular_file_no_follow(path: pathlib.Path, description: str):
         except OSError as error:
             raise ValueError(f"{description} changed while it was being opened: {path}") from error
         if (
-            not stat.S_ISREG(opened.st_mode)
+            _metadata_is_link_or_reparse_point(opened)
+            or _metadata_is_link_or_reparse_point(current)
+            or not stat.S_ISREG(opened.st_mode)
             or not stat.S_ISREG(current.st_mode)
             or _file_identity(before) != _file_identity(opened)
             or _file_identity(opened) != _file_identity(current)

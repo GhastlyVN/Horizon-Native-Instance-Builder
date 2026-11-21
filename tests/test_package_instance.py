@@ -6,9 +6,9 @@ import struct
 import tempfile
 import unittest
 import zipfile
-from unittest.mock import patch
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from scripts import package_instance
 from scripts.package_instance import package
