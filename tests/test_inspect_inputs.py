@@ -201,6 +201,18 @@ class InspectInputsTests(unittest.TestCase):
                     inspect_inputs.inspect_instance(archive)
 
 
+    def test_atomic_report_is_sorted_json_with_trailing_newline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory) / "reports" / "inspection.json"
+            inspect_inputs.write_report_atomic(
+                output, {"z": 1, "a": {"d": 4, "b": 2}}
+            )
+            self.assertEqual(
+                output.read_text(encoding="utf-8"),
+                '{\n  "a": {\n    "b": 2,\n    "d": 4\n  },\n  "z": 1\n}\n',
+            )
+
+
 
 if __name__ == "__main__":
     unittest.main()
