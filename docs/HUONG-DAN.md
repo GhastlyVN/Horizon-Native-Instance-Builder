@@ -41,6 +41,7 @@ Nếu báo cáo tương thích đã cũ hoặc không khớp commit Nightly, wor
 
 Trong **Actions → Build Horizon Native Instance → Run workflow**:
 - `horizon_ref`: nhập `nightly` để chọn bản mới nhất, hoặc chọn tag như `nightly-2026-11-08` từ `catalog/horizon-versions.json`.
+- `horizon_source_repository`: để trống dùng upstream `horizon-rust/horizon`; muốn dùng fork thì ghi `OWNER/REPO` (ví dụ `GhastlyVN/horizon`).
 - `include_native_mods`: bật khi muốn build mod đã được xác minh cho đúng commit. Tắt nếu muốn build core-only cho một Nightly cũ không có báo cáo tương thích tương ứng.
 - Các phiên bản cũ vẫn phải khớp Minecraft version trong `research-lock.json`; nếu không, bước xác minh Minecraft sẽ từ chối build.
 
