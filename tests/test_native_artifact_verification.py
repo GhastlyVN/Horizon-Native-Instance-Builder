@@ -94,7 +94,7 @@ class NativeArtifactVerificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             inputs, linux, windows = self._fixture(Path(temp))
             binary = linux / "native-runtime" / "horizon-client"
-            original_open = Path.open
+            original_open = open
             mutated = False
 
             class MutatingStream:
@@ -129,7 +129,7 @@ class NativeArtifactVerificationTests(unittest.TestCase):
                     return MutatingStream(stream)
                 return stream
 
-            with patch.object(Path, "open", patched_open):
+            with patch("builtins.open", patched_open):
                 with self.assertRaisesRegex(ValueError, "changed during verification"):
                     verify_artifacts(inputs, linux, windows)
 

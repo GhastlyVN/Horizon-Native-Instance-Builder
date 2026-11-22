@@ -52,7 +52,7 @@ def _no_follow_opener(path, flags):
 
 def _open_binary(path: Path, target: str):
     try:
-        return path.open("rb", opener=_no_follow_opener)
+        return open(path, "rb", opener=_no_follow_opener)
     except OSError as error:
         raise ValueError(f"{target}: refusing symlink or reparse-point native client") from error
 
