@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from scripts import verify_native_artifacts
 from scripts.verify_native_artifacts import verify_artifacts
 
 class NativeArtifactVerificationTests(unittest.TestCase):
@@ -170,6 +171,31 @@ class NativeArtifactVerificationTests(unittest.TestCase):
             inputs, linux, windows = self._fixture(Path(temp), "main")
             with self.assertRaisesRegex(ValueError, "full 40-character SHA-1"):
                 verify_artifacts(inputs, linux, windows)
+    def test_report_output_refuses_links_and_directories(self):
+        result = {"horizon_commit": "a" * 40}
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            victim = root / "victim"
+            victim.write_text("keep", encoding="utf-8")
+            output = root / "report.json"
+            output.symlink_to(victim)
+            with patch.object(verify_native_artifacts, "verify_artifacts", return_value=result), patch(
+                "sys.argv",
+                ["verify", "--inputs", "inputs", "--linux", "linux", "--windows", "windows", "--output", str(output)],
+            ):
+                with self.assertRaisesRegex(ValueError, "symlink"):
+                    verify_native_artifacts.main()
+            self.assertEqual(victim.read_text(encoding="utf-8"), "keep")
+
+            output.unlink()
+            output.mkdir()
+            with patch.object(verify_native_artifacts, "verify_artifacts", return_value=result), patch(
+                "sys.argv",
+                ["verify", "--inputs", "inputs", "--linux", "linux", "--windows", "windows", "--output", str(output)],
+            ):
+                with self.assertRaisesRegex(ValueError, "non-regular"):
+                    verify_native_artifacts.main()
+
 
 if __name__ == "__main__":
     unittest.main()
