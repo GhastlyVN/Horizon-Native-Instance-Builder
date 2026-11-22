@@ -15,7 +15,7 @@ class MojangPartialFileTests(unittest.TestCase):
             victim.write_bytes(b"do not overwrite")
             (root / "client.jar.part").symlink_to(victim)
 
-            with self.assertRaisesRegex(RuntimeError, "Could not download"):
+            with self.assertRaisesRegex(ValueError, "non-regular"):
                 download_minecraft._write_verified(
                     root, "client.jar", "https://launcher.mojang.com/client.jar"
                 )
