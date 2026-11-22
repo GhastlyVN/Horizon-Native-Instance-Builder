@@ -11,13 +11,33 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import stat
 import subprocess
 from pathlib import Path
 
 DEFAULT_BASELINE = "2.35"
 ELF_MAGIC = b"\x7fELF"
 _VERSION_RE = re.compile(r"GLIBC_(\d+)\.(\d+)(?:\.(\d+))?")
+
+
+def _is_reparse_point(metadata: os.stat_result) -> bool:
+    reparse_attribute = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        getattr(metadata, "st_file_attributes", 0) & reparse_attribute
+    )
+
+
+def _no_follow_open(binary: Path):
+    # shortcut: without O_NOFOLLOW the lstat/reparse guard still applies; upgrade to native handle identity if needed.
+    try:
+        return open(
+            binary, "rb",
+            opener=lambda path, flags: os.open(path, flags | getattr(os, "O_NOFOLLOW", 0)),
+        )
+    except OSError as error:
+        raise ValueError(f"{binary}: refusing symlink or reparse-point native client") from error
 
 
 def parse_version(text: str) -> tuple[int, ...]:
@@ -74,7 +94,13 @@ def read_versions(binary: Path, readelf: str = "readelf") -> str:
     """Run ``readelf --version-info`` against ``binary`` and return its output."""
     if not binary.is_file():
         raise ValueError(f"missing native client binary: {binary}")
-    with binary.open("rb") as stream:
+    try:
+        path_before = binary.lstat()
+    except OSError as error:
+        raise ValueError(f"{binary}: cannot inspect native client: {error}") from error
+    if _is_reparse_point(path_before):
+        raise ValueError(f"{binary}: refusing symlink or reparse-point native client")
+    with _no_follow_open(binary) as stream:
         if stream.read(4) != ELF_MAGIC:
             raise ValueError(f"{binary}: not an ELF executable")
     command = [readelf, "--wide", "--version-info", str(binary)]
