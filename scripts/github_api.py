@@ -58,7 +58,13 @@ def open_url(
     """Open ``url`` with authentication and retries for transient failures."""
     last_error: Exception | None = None
     for attempt in range(1, attempts + 1):
-        request = urllib.request.Request(url, headers=build_headers(url, accept))
+        headers = build_headers(url, accept)
+        authorization = headers.pop("Authorization", None)
+        request = urllib.request.Request(url, headers=headers)
+        # urllib drops unredirected headers when it follows a redirect, so the
+        # workflow token cannot be forwarded to a redirected host.
+        if authorization is not None:
+            request.add_unredirected_header("Authorization", authorization)
         try:
             return urllib.request.urlopen(request, timeout=timeout)
         except urllib.error.HTTPError as error:
