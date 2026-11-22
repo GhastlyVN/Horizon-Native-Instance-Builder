@@ -203,6 +203,38 @@ class InspectInputsTests(unittest.TestCase):
             self.assertEqual(source_summary["bytes"], len(source))
             self.assertEqual(source_summary["sha256"], hashlib.sha256(source).hexdigest())
 
+    def test_inspector_reads_and_hashes_the_same_snapshot_after_in_place_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source_path = pathlib.Path(directory) / "instance.zip"
+            original = self._instance_zip(source_path)
+            original_mtime = source_path.stat().st_mtime_ns
+
+            replacement_path = pathlib.Path(directory) / "replacement.zip"
+            with zipfile.ZipFile(replacement_path, "w") as output:
+                output.writestr("game/versions/26.3/26.3.json", "{}")
+                output.writestr("game/options.txt", "fullscreen:true ")
+            replacement = replacement_path.read_bytes()
+            self.assertEqual(len(replacement), len(original))
+
+            # Simulate Windows, where ctime is creation time and cannot detect
+            # same-size in-place writes when the original mtime is restored.
+            with patch.object(inspect_inputs.sys, "platform", "win32"):
+                with inspect_inputs._validated_archive(source_path) as (
+                    validated, digest, archive_bytes, _names
+                ):
+                    with source_path.open("r+b") as stream:
+                        stream.seek(0)
+                        stream.write(replacement)
+                        stream.truncate()
+                    os.utime(source_path, ns=(original_mtime, original_mtime))
+
+                    self.assertEqual(
+                        validated.read("game/options.txt"),
+                        b"fullscreen:false",
+                    )
+                    self.assertEqual(digest, hashlib.sha256(original).hexdigest())
+                    self.assertEqual(archive_bytes, len(original))
+
     def test_archive_mutation_during_inspection_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             archive = pathlib.Path(directory) / "changing.zip"

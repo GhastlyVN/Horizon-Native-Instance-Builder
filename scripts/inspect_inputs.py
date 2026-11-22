@@ -69,9 +69,38 @@ def _hash_stream_bounded(stream) -> str:
     return digest.hexdigest()
 
 
+def _copy_stream_to_snapshot(stream, snapshot):
+    """Hash and copy one bounded archive so validation reads the exact hashed bytes."""
+    digest = hashlib.sha256()
+    total_bytes = 0
+    position = stream.tell()
+    try:
+        stream.seek(0)
+        snapshot.seek(0)
+        snapshot.truncate(0)
+        while True:
+            remaining = MAX_ARCHIVE_BYTES - total_bytes
+            chunk = stream.read(min(CHUNK_SIZE, remaining + 1))
+            if not chunk:
+                break
+            total_bytes += len(chunk)
+            if total_bytes > MAX_ARCHIVE_BYTES:
+                raise ValueError(
+                    f"ZIP archive exceeds inspection size limit while snapshotting "
+                    f"({MAX_ARCHIVE_BYTES} bytes)"
+                )
+            digest.update(chunk)
+            snapshot.write(chunk)
+        snapshot.flush()
+        snapshot.seek(0)
+        return digest.hexdigest(), total_bytes
+    finally:
+        stream.seek(position)
+
+
 @contextmanager
 def _validated_archive(path: pathlib.Path):
-    """Validate one no-follow archive handle, then detect path/file mutation."""
+    """Validate an immutable snapshot and detect replacement of the original path."""
     path = pathlib.Path(path)
     with open_regular_zip_source(path) as stream:
         before = os.fstat(stream.fileno())
@@ -83,36 +112,40 @@ def _validated_archive(path: pathlib.Path):
                 f"({MAX_ARCHIVE_BYTES} bytes): {path}"
             )
 
-        digest = _hash_stream_bounded(stream)
-        stream.seek(0)
-        preflight_zip_stream(stream, path)
-        try:
-            archive = zipfile.ZipFile(stream)
-        except (OSError, zipfile.BadZipFile) as error:
-            raise ValueError(f"Invalid ZIP archive: {path}") from error
+        # Hashing the source and then asking ZipFile to read it again leaves a
+        # same-size/same-mtime mutation window on Windows. Inspect a disk-backed
+        # snapshot instead, so the reported digest and every parsed member refer
+        # to exactly the same bytes.
+        with tempfile.TemporaryFile(mode="w+b") as snapshot:
+            digest, archive_bytes = _copy_stream_to_snapshot(stream, snapshot)
+            preflight_zip_stream(snapshot, path)
+            try:
+                archive = zipfile.ZipFile(snapshot)
+            except (OSError, zipfile.BadZipFile) as error:
+                raise ValueError(f"Invalid ZIP archive: {path}") from error
 
-        with archive:
-            # This is the exact shared policy used by preparation. It runs before
-            # testzip() can decompress any member from an untrusted archive.
-            _, names = validate_zip_archive(archive)
-            bad = archive.testzip()
-            if bad:
-                raise ValueError(f"ZIP CRC failure in {path.name}: {bad}")
-            yield archive, digest, before.st_size, names
+            with archive:
+                # This is the exact shared policy used by preparation. It runs before
+                # testzip() can decompress any member from an untrusted archive.
+                _, names = validate_zip_archive(archive)
+                bad = archive.testzip()
+                if bad:
+                    raise ValueError(f"ZIP CRC failure in {path.name}: {bad}")
+                yield archive, digest, archive_bytes, names
 
-        after = os.fstat(stream.fileno())
-        try:
-            path_after = path.lstat()
-        except OSError as error:
-            raise ValueError(f"Archive path changed during inspection: {path}") from error
-        if (
-            not stat.S_ISREG(path_after.st_mode)
-            or stat.S_ISLNK(path_after.st_mode)
-            or bool(getattr(path_after, "st_file_attributes", 0) & 0x400)
-            or _file_identity(before) != _file_identity(after)
-            or _file_identity(after) != _file_identity(path_after)
-        ):
-            raise ValueError(f"Archive changed during inspection: {path}")
+    after = os.fstat(stream.fileno())
+    try:
+        path_after = path.lstat()
+    except OSError as error:
+        raise ValueError(f"Archive path changed during inspection: {path}") from error
+    if (
+        not stat.S_ISREG(path_after.st_mode)
+        or stat.S_ISLNK(path_after.st_mode)
+        or bool(getattr(path_after, "st_file_attributes", 0) & 0x400)
+        or _file_identity(before) != _file_identity(after)
+        or _file_identity(after) != _file_identity(path_after)
+    ):
+        raise ValueError(f"Archive changed during inspection: {path}")
 
 
 def _normalized_member_name(info: zipfile.ZipInfo) -> str:
