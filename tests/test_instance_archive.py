@@ -466,6 +466,18 @@ class InstanceArchiveTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "too many entries"):
                     validate_zip(archive)
 
+    def test_preflight_accepts_exactly_65535_zip_entries(self):
+        # CPython writes this valid boundary case without ZIP64; 0xFFFF is a
+        # real entry count here, not proof that a ZIP64 record is missing.
+        with tempfile.TemporaryDirectory() as temp:
+            archive = pathlib.Path(temp) / "65535-entries.zip"
+            with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as zf:
+                for index in range(0xFFFF):
+                    zf.writestr(f"entry-{index:05d}.bin", b"")
+            with archive.open("rb") as stream:
+                entries, _ = preflight_zip_stream(stream, archive)
+            self.assertEqual(entries, 0xFFFF)
+
     def test_preflight_rejects_excessive_uncompressed_size(self):
         with tempfile.TemporaryDirectory() as temp:
             archive = pathlib.Path(temp) / "large.zip"
