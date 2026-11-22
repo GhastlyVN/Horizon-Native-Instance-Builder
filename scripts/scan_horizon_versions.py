@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import urllib.parse
 from pathlib import Path
 
 try:
@@ -37,6 +38,19 @@ def source_commit(release: dict) -> str:
     return commit
 
 
+def _asset_url(url: str, name: str) -> str:
+    """Only accept HTTPS GitHub release URLs whose basename is the asset name."""
+    parsed = urllib.parse.urlparse(url) if isinstance(url, str) else None
+    if (
+        parsed is None
+        or parsed.scheme != "https"
+        or parsed.hostname != "github.com"
+        or parsed.path.rstrip("/").rsplit("/", 1)[-1] != name
+    ):
+        raise ValueError(f"unsafe download URL for {name}: {url}")
+    return url
+
+
 def build_catalog(releases: list[dict], limit: int) -> dict:
     versions = []
     seen = set()
@@ -46,7 +60,7 @@ def build_catalog(releases: list[dict], limit: int) -> dict:
             continue
         assets = [
             {"name": item.get("name", ""), "size": item.get("size", 0),
-             "url": item.get("browser_download_url", "")}
+             "url": _asset_url(item.get("browser_download_url", ""), item.get("name", ""))}
             for item in release.get("assets", [])
             if isinstance(item, dict) and ASSET.fullmatch(item.get("name", ""))
         ]
