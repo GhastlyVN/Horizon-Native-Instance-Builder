@@ -94,6 +94,8 @@ def _write_verified(root, relative, url, size=None, sha1=None):
     last_error = None
     for attempt in range(3):
         temporary = destination.with_name(destination.name + ".part")
+        if temporary.is_symlink() or (temporary.exists() and not temporary.is_file()):
+            raise ValueError(f"Refusing non-regular partial file: {temporary}")
         digest = hashlib.sha1()
         total = 0
         try:
