@@ -45,6 +45,18 @@ class HorizonVersionCatalogTests(unittest.TestCase):
         self.assertEqual(len(result["versions"]), 1)
         self.assertEqual(result["versions"][0]["tag"], "nightly")
 
+    def test_refuses_unapproved_asset_url(self):
+        bad = release("nightly", "a" * 40)
+        bad["assets"][0]["browser_download_url"] = "https://evil.example/horizon-linux-x86_64.tar.gz"
+        with self.assertRaisesRegex(ValueError, "unapproved asset download URL"):
+            build_catalog([bad], 20)
+
+    def test_refuses_unapproved_release_url(self):
+        bad = release("nightly", "a" * 40)
+        bad["html_url"] = "https://evil.example/nightly"
+        with self.assertRaisesRegex(ValueError, "unapproved release URL"):
+            build_catalog([bad], 20)
+
 
 if __name__ == "__main__":
     unittest.main()

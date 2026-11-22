@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import urllib.parse
 from pathlib import Path
 
 try:
@@ -16,6 +17,17 @@ API = "https://api.github.com/repos/horizon-rust/horizon/releases?per_page=100"
 SHA = re.compile(r"^[0-9a-f]{40}$")
 NIGHTLY_TAG = re.compile(r"^nightly(?:-\d{4}-\d{2}-\d{2})?$")
 ASSET = re.compile(r"^horizon-(?:linux-x86_64|windows-x64|macos-(?:arm64|x64))\.(?:tar\.gz|zip)$")
+
+
+def _github_https_url(value: str) -> bool:
+    parsed = urllib.parse.urlparse(value)
+    return (
+        parsed.scheme == "https"
+        and parsed.hostname == "github.com"
+        and parsed.username is None
+        and parsed.password is None
+        and parsed.port in (None, 443)
+    )
 
 
 def fetch_releases() -> list[dict]:
@@ -52,6 +64,12 @@ def build_catalog(releases: list[dict], limit: int) -> dict:
         ]
         if not assets:
             continue
+        page = release.get("html_url", "")
+        if not isinstance(page, str) or not _github_https_url(page):
+            raise ValueError(f"{tag}: unapproved release URL: {page}")
+        for asset in assets:
+            if not _github_https_url(asset["url"]):
+                raise ValueError(f"{tag}: unapproved asset download URL: {asset['url']}")
         commit = source_commit(release)
         published = release.get("published_at", "")
         if not isinstance(published, str) or not published:
