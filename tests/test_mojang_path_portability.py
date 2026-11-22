@@ -15,11 +15,11 @@ class MojangPathPortabilityTests(unittest.TestCase):
                 download_minecraft._safe_relative_path(path)
 
     def test_rejects_control_characters(self):
-        with self.assertRaisesRegex(ValueError, "Unsafe"):
+        with self.assertRaisesRegex(ValueError, "Non-portable"):
             download_minecraft._safe_relative_path("a\x01b.jar")
 
     def test_accepts_a_plain_relative_path(self):
-        self.assertEqual(str(download_minecraft._safe_relative_path("a/b.jar")), "a/b.jar")
+        self.assertEqual(download_minecraft._safe_relative_path("a/b.jar").as_posix(), "a/b.jar")
 
 
 if __name__ == "__main__":
