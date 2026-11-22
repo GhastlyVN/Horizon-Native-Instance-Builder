@@ -132,21 +132,21 @@ def _validated_archive(path: pathlib.Path):
                 if bad:
                     raise ValueError(f"ZIP CRC failure in {path.name}: {bad}")
                 yield archive, digest, archive_bytes, names
-
-    after = os.fstat(stream.fileno())
-    try:
-        path_after = path.lstat()
-    except OSError as error:
-        raise ValueError(f"Archive path changed during inspection: {path}") from error
-    if (
-        not stat.S_ISREG(path_after.st_mode)
-        or stat.S_ISLNK(path_after.st_mode)
-        or bool(getattr(path_after, "st_file_attributes", 0) & 0x400)
-        or _file_identity(before) != _file_identity(after)
-        or _file_identity(after) != _file_identity(path_after)
-    ):
-        raise ValueError(f"Archive changed during inspection: {path}")
-
+    
+        after = os.fstat(stream.fileno())
+        try:
+            path_after = path.lstat()
+        except OSError as error:
+            raise ValueError(f"Archive path changed during inspection: {path}") from error
+        if (
+            not stat.S_ISREG(path_after.st_mode)
+            or stat.S_ISLNK(path_after.st_mode)
+            or bool(getattr(path_after, "st_file_attributes", 0) & 0x400)
+            or _file_identity(before) != _file_identity(after)
+            or _file_identity(after) != _file_identity(path_after)
+        ):
+            raise ValueError(f"Archive changed during inspection: {path}")
+    
 
 def _normalized_member_name(info: zipfile.ZipInfo) -> str:
     raw_name = info.filename.replace(chr(92), "/")
