@@ -68,6 +68,16 @@ class ResolveHorizonRevisionTests(unittest.TestCase):
             self.assertEqual(payload["repository"], "GhastlyVN/horizon")
             self.assertEqual(output.read_text(encoding="ascii"), "a" * 40 + "\n")
 
+    def test_workflow_exposes_the_optional_source_repository_input(self):
+        workflow = (
+            Path(__file__).resolve().parents[1] / ".github/workflows/build.yml"
+        ).read_text(encoding="utf-8")
+        block = workflow.split("horizon_source_repository:", 1)[1].split("include_native_mods:", 1)[0]
+        self.assertIn("blank = upstream horizon-rust/horizon", block)
+        self.assertIn('default: ""', block)
+        self.assertIn('required: false', block)
+        self.assertIn('--repository "$HORIZON_SOURCE_REPOSITORY"', workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
