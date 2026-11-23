@@ -61,6 +61,19 @@ class GlibcBaselineTests(unittest.TestCase):
             self.assertEqual(report["binary"], "horizon-client")
             self.assertEqual(report["required_max"], "GLIBC_2.35")
 
+    def test_verify_binary_rejects_symlinked_input(self):
+        with tempfile.TemporaryDirectory() as temp:
+            binary = Path(temp) / "horizon-client"
+            real = binary.with_name("real-client")
+            binary.write_bytes(b"\x7fELF" + b"\x00" * 60)
+            binary.rename(real)
+            try:
+                binary.symlink_to(real)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"symlink creation unavailable: {error}")
+            with self.assertRaisesRegex(ValueError, "refusing symlink"):
+                verify_binary(binary, "2.35", readelf=_fake_readelf)
+
     def test_verify_binary_rejects_non_elf_input(self):
         with tempfile.TemporaryDirectory() as temp:
             binary = Path(temp) / "horizon-client"
