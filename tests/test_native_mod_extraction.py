@@ -469,6 +469,37 @@ class NativeModExtractionTests(unittest.TestCase):
                     extract_bundle(alias, destination)
             self.assertFalse(destination.exists())
 
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "POSIX FIFO test")
+    def test_extract_bundle_refuses_fifo_before_opening_it(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            fifo = root / "sample.hnmod"
+            os.mkfifo(fifo)
+            with patch(
+                "scripts.extract_native_mods.os.open",
+                side_effect=AssertionError("FIFO must be rejected before opening"),
+            ):
+                with self.assertRaisesRegex(ValueError, "regular non-symlink file"):
+                    extract_bundle(fifo, root / "out")
+            self.assertFalse((root / "out").exists())
+
+    def test_extract_bundle_refuses_symlink_archive_path(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            archive = root / "sample.hnmod"
+            alias = root / "sample-link.hnmod"
+            self._bundle(archive)
+            try:
+                alias.symlink_to(archive)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"symlink creation is unavailable: {error}")
+            with patch(
+                "scripts.extract_native_mods.os.open",
+                side_effect=AssertionError("symlink must be rejected before opening"),
+            ):
+                with self.assertRaisesRegex(ValueError, "regular non-symlink file"):
+                    extract_bundle(alias, root / "out")
+            self.assertFalse((root / "out").exists())
 
 
 if __name__ == "__main__":

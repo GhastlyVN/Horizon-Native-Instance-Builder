@@ -15,6 +15,7 @@ import zipfile
 
 try:
     from scripts.prepare import (
+        MAX_ARCHIVE_BYTES,
         MAX_ARCHIVE_ENTRIES,
         MAX_MEMBER_UNCOMPRESSED_BYTES,
         MAX_TOTAL_UNCOMPRESSED_BYTES,
@@ -25,6 +26,7 @@ try:
     )
 except ModuleNotFoundError:  # direct execution: python scripts/extract_native_mods.py
     from prepare import (
+        MAX_ARCHIVE_BYTES,
         MAX_ARCHIVE_ENTRIES,
         MAX_MEMBER_UNCOMPRESSED_BYTES,
         MAX_TOTAL_UNCOMPRESSED_BYTES,
@@ -45,14 +47,25 @@ MAX_MANIFEST_BYTES = 1024 * 1024
 REPARSE_POINT = 0x400
 
 
+def _metadata_is_link_or_reparse_point(metadata) -> bool:
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        getattr(metadata, "st_file_attributes", 0) & REPARSE_POINT
+    )
+
+
 def _is_link_or_reparse_point(path: pathlib.Path) -> bool:
     try:
         metadata = path.lstat()
     except FileNotFoundError:
         return False
-    return stat.S_ISLNK(metadata.st_mode) or bool(
-        getattr(metadata, "st_file_attributes", 0) & REPARSE_POINT
-    )
+    return _metadata_is_link_or_reparse_point(metadata)
+
+
+def _file_identity(metadata):
+    identity = (metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns)
+    if os.name != "nt":
+        return (*identity, metadata.st_ctime_ns)
+    return identity
 
 
 def _filesystem_collision_key(value: str) -> str:
