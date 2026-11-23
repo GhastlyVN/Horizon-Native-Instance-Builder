@@ -5,6 +5,8 @@ import json
 import pathlib
 import zipfile
 
+MAX_METADATA_BYTES = 4 * 1024 * 1024
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--lock", required=True)
@@ -21,6 +23,11 @@ def main():
             for name in archive.namelist():
                 parts = pathlib.PurePosixPath(name.replace(chr(92), "/")).parts
                 if len(parts) >= 3 and parts[-3] == "versions" and parts[-1] == parts[-2] + ".json":
+                    size = archive.getinfo(name).file_size
+                    if size > MAX_METADATA_BYTES:
+                        raise ValueError(
+                            f"{name}: version metadata exceeds the {MAX_METADATA_BYTES}-byte safety limit."
+                        )
                     metadata = json.loads(archive.read(name))
                     if isinstance(metadata, dict) and isinstance(metadata.get("id"), str):
                         found.add(metadata["id"])
