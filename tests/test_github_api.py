@@ -40,12 +40,28 @@ class GithubApiTests(unittest.TestCase):
         self.assertEqual(release["Authorization"], "Bearer secret")
         self.assertNotIn("Authorization", index)
 
+    def test_authorization_is_not_forwarded_on_redirect(self):
+        seen = []
+
+        def fake_urlopen(request, timeout=60):
+            seen.append(request)
+            return FakeResponse()
+
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "secret"}, clear=True), patch(
+            "scripts.github_api.urllib.request.urlopen", side_effect=fake_urlopen
+        ):
+            open_url("https://api.github.com/repos/x/y", sleep=lambda _delay: None)
+        request = seen[0]
+        self.assertEqual(request.get_header("Authorization"), "Bearer secret")
+        self.assertIsNone(request.headers.get("Authorization"))
+        self.assertEqual(request.unredirected_hdrs.get("Authorization"), "Bearer secret")
+
     def test_retries_rate_limited_responses(self):
         calls = []
         sleeps = []
 
         def fake_urlopen(request, timeout=60):
-            calls.append(request.headers.get("Authorization"))
+            calls.append(request.get_header("Authorization"))
             if len(calls) == 1:
                 raise urllib.error.HTTPError(
                     request.full_url, 403, "rate limit exceeded", {}, BytesIO(b"")
