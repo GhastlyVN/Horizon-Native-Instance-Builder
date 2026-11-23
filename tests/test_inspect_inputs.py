@@ -251,6 +251,62 @@ class InspectInputsTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "changed during inspection"):
                     inspect_inputs.inspect_instance(archive)
 
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "POSIX FIFO test")
+    def test_validated_archive_refuses_a_fifo_without_hanging(self):
+        with tempfile.TemporaryDirectory() as dirname:
+            fifo = pathlib.Path(dirname) / "input.zip"
+            os.mkfifo(fifo)
+            with self.assertRaisesRegex(ValueError, "regular"):
+                with inspect_inputs._validated_archive(fifo):
+                    pass
+
+
+    def test_validated_archive_refuses_symlink_before_opening_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            archive = root / "source.zip"
+            alias = root / "linked.zip"
+            self._instance_zip(archive)
+            try:
+                alias.symlink_to(archive)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"symlink creation is unavailable: {error}")
+
+            with patch(
+                "scripts.inspect_inputs.os.open",
+                side_effect=AssertionError("linked archive must be rejected before opening"),
+            ):
+                with self.assertRaisesRegex(ValueError, "regular non-symlink file"):
+                    with inspect_inputs._validated_archive(alias):
+                        pass
+
+    @unittest.skipIf(os.name == "nt", "open-file replacement semantics differ on Windows")
+    def test_validated_archive_rejects_symlink_swap_after_open(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            archive = root / "source.zip"
+            moved = root / "source-original.zip"
+            target = root / "target.zip"
+            self._instance_zip(archive)
+            self._instance_zip(target)
+            original_open = os.open
+            replaced = False
+
+            def replace_after_open(path, flags, *args, **kwargs):
+                nonlocal replaced
+                descriptor = original_open(path, flags, *args, **kwargs)
+                if pathlib.Path(path) == archive and not replaced:
+                    os.replace(archive, moved)
+                    archive.symlink_to(target)
+                    replaced = True
+                return descriptor
+
+            with patch("scripts.inspect_inputs.os.open", side_effect=replace_after_open):
+                with self.assertRaisesRegex(ValueError, "(?:ZIP archive|path) changed while it was being opened"):
+                    with inspect_inputs._validated_archive(archive):
+                        pass
+            self.assertTrue(replaced)
+
 
     def test_inspector_rejects_oversized_central_directory_before_zipfile(self):
         with tempfile.TemporaryDirectory() as directory:

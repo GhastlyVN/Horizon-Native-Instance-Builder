@@ -26,6 +26,7 @@ MAX_SOURCE_FILES = 1024
 MAX_SOURCE_FILE_BYTES = 1024 * 1024
 MAX_SOURCE_TOTAL_BYTES = 16 * 1024 * 1024
 CHUNK_SIZE = 1024 * 1024
+REPARSE_POINT = 0x400
 
 # When invoked as `python scripts/inspect_inputs.py`, Python starts with scripts/
 # on sys.path. Add the repository root so the inspector uses the same validator as
@@ -48,6 +49,12 @@ def _file_identity(metadata: os.stat_result) -> tuple[int, ...]:
     if sys.platform == "win32":
         return identity
     return (*identity, metadata.st_ctime_ns)
+
+
+def _metadata_is_link_or_reparse_point(metadata: os.stat_result) -> bool:
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        getattr(metadata, "st_file_attributes", 0) & REPARSE_POINT
+    )
 
 
 def _hash_stream_bounded(stream) -> str:
@@ -102,10 +109,30 @@ def _copy_stream_to_snapshot(stream, snapshot):
 def _validated_archive(path: pathlib.Path):
     """Validate an immutable snapshot and detect replacement of the original path."""
     path = pathlib.Path(path)
+    try:
+        path_before = path.lstat()
+    except OSError as error:
+        raise ValueError(f"Could not inspect archive path {path}: {error}") from error
+    # open_regular_zip_source already applies the no-follow, regular-file and
+    # O_NONBLOCK guards; keep the earlier metadata for the outer identity check.
     with open_regular_zip_source(path) as stream:
         before = os.fstat(stream.fileno())
-        if not stat.S_ISREG(before.st_mode):
-            raise ValueError(f"Archive must be a regular file: {path}")
+        if (
+            _metadata_is_link_or_reparse_point(before)
+            or not stat.S_ISREG(before.st_mode)
+            or _file_identity(before) != _file_identity(path_before)
+        ):
+            raise ValueError(f"Archive path changed while it was being opened: {path}")
+        try:
+            path_after_open = path.lstat()
+        except OSError as error:
+            raise ValueError(f"Archive path changed while it was being opened: {path}") from error
+        if (
+            _metadata_is_link_or_reparse_point(path_after_open)
+            or not stat.S_ISREG(path_after_open.st_mode)
+            or _file_identity(path_after_open) != _file_identity(before)
+        ):
+            raise ValueError(f"Archive path changed while it was being opened: {path}")
         if before.st_size > MAX_ARCHIVE_BYTES:
             raise ValueError(
                 f"ZIP archive exceeds inspection size limit "
@@ -144,6 +171,8 @@ def _validated_archive(path: pathlib.Path):
             or bool(getattr(path_after, "st_file_attributes", 0) & 0x400)
             or _file_identity(before) != _file_identity(after)
             or _file_identity(after) != _file_identity(path_after)
+            or _metadata_is_link_or_reparse_point(path_after)
+            or not stat.S_ISREG(path_after.st_mode)
         ):
             raise ValueError(f"Archive changed during inspection: {path}")
     
