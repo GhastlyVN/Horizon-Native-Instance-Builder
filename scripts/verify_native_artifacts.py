@@ -45,6 +45,18 @@ def _is_reparse_point(metadata: os.stat_result) -> bool:
     )
 
 
+def _no_follow_opener(path, flags):
+    # shortcut: platforms without O_NOFOLLOW keep the lstat/reparse guard; upgrade to native handle identity if that race matters.
+    return os.open(path, flags | getattr(os, "O_NOFOLLOW", 0))
+
+
+def _open_binary(path: Path, target: str):
+    try:
+        return open(path, "rb", opener=_no_follow_opener)
+    except OSError as error:
+        raise ValueError(f"{target}: refusing symlink or reparse-point native client") from error
+
+
 def _inspect_binary(path: Path, target: str) -> tuple[int, str]:
     """Validate the executable header and hash the same stable, regular file handle."""
     try:
@@ -54,7 +66,7 @@ def _inspect_binary(path: Path, target: str) -> tuple[int, str]:
     if _is_reparse_point(path_before):
         raise ValueError(f"{target}: refusing symlink or reparse-point native client")
 
-    with path.open("rb") as stream:
+    with _open_binary(path, target) as stream:
         before = os.fstat(stream.fileno())
         if not stat.S_ISREG(before.st_mode) or _is_reparse_point(before):
             raise ValueError(f"{target}: native client is not a regular file")

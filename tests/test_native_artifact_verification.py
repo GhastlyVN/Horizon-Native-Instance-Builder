@@ -1,3 +1,4 @@
+import os
 import tempfile
 import struct
 import unittest
@@ -93,7 +94,7 @@ class NativeArtifactVerificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             inputs, linux, windows = self._fixture(Path(temp))
             binary = linux / "native-runtime" / "horizon-client"
-            original_open = Path.open
+            original_open = open
             mutated = False
 
             class MutatingStream:
@@ -128,7 +129,7 @@ class NativeArtifactVerificationTests(unittest.TestCase):
                     return MutatingStream(stream)
                 return stream
 
-            with patch.object(Path, "open", patched_open):
+            with patch("builtins.open", patched_open):
                 with self.assertRaisesRegex(ValueError, "changed during verification"):
                     verify_artifacts(inputs, linux, windows)
 
@@ -144,6 +145,30 @@ class NativeArtifactVerificationTests(unittest.TestCase):
                 self.skipTest(f"symlink creation unavailable: {error}")
             with self.assertRaisesRegex(ValueError, "symlink or reparse-point"):
                 verify_artifacts(inputs, linux, windows)
+
+    def test_rejects_symlink_swapped_before_open(self):
+        if not getattr(os, "O_NOFOLLOW", 0):
+            self.skipTest("O_NOFOLLOW unavailable")
+        with tempfile.TemporaryDirectory() as temp:
+            inputs, linux, windows = self._fixture(Path(temp))
+            binary = linux / "native-runtime" / "horizon-client"
+            target = binary.with_name("real-client")
+            binary.rename(target)
+            try:
+                binary.symlink_to(target)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"symlink creation unavailable: {error}")
+            original_lstat = Path.lstat
+            target_stat = original_lstat(target)
+
+            def patched_lstat(candidate):
+                if candidate == binary:
+                    return target_stat
+                return original_lstat(candidate)
+
+            with patch.object(Path, "lstat", patched_lstat):
+                with self.assertRaisesRegex(ValueError, "refusing symlink"):
+                    verify_artifacts(inputs, linux, windows)
 
     def test_rejects_platform_built_from_different_horizon_commit(self):
         with tempfile.TemporaryDirectory() as temp:
