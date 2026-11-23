@@ -58,7 +58,7 @@ def _asset_url(url: str, name: str) -> str:
         or parsed.hostname != "github.com"
         or parsed.path.rstrip("/").rsplit("/", 1)[-1] != name
     ):
-        raise ValueError(f"unsafe download URL for {name}: {url}")
+        raise ValueError(f"unsafe download URL (unapproved asset download URL) for {name}: {url}")
     return url
 
 

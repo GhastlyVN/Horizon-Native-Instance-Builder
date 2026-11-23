@@ -224,7 +224,7 @@ def open_regular_zip_source(path):
     except OSError as error:
         raise ValueError(f"ZIP archive is unavailable: {path}") from error
     if _metadata_is_link_or_reparse_point(path_before) or not stat.S_ISREG(path_before.st_mode):
-        raise ValueError(f"ZIP archive must be a regular non-symlink file: {path}")
+        raise ValueError(f"ZIP archive is not a regular file (must be a regular non-symlink file): {path}")
 
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
     if hasattr(os, "O_NOFOLLOW"):
