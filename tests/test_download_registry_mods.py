@@ -5,8 +5,11 @@ import struct
 import unittest
 from unittest.mock import patch
 import zipfile
+from unittest.mock import patch
 
-from scripts.download_registry_mods import choose_versions, validate_bundle
+from scripts.download_registry_mods import (
+    APPROVED_DOWNLOAD_HOSTS, choose_versions, fetch_bytes, validate_bundle
+)
 
 
 class RegistryModSelectionTests(unittest.TestCase):
@@ -166,3 +169,41 @@ class RegistryModSelectionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RegistryDownloadBoundaryTests(unittest.TestCase):
+    def fake_response(self, final_url: str):
+        class Response:
+            headers = {}
+
+            def geturl(self):
+                return final_url
+
+            def read(self, *_args):
+                return b"{}"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return False
+
+        return Response()
+
+    def test_rejects_unapproved_redirect_host(self):
+        with patch("scripts.download_registry_mods.open_url", return_value=self.fake_response("https://evil.example/file")):
+            with self.assertRaisesRegex(ValueError, "unapproved download URL"):
+                fetch_bytes("https://github.com/owner/repo/releases/download/v1/file")
+
+    def test_rejects_credentials_and_non_default_port(self):
+        for url in (
+            "https://user@github.com/file",
+            "https://github.com:8443/file",
+        ):
+            with self.subTest(url=url), self.assertRaises(ValueError):
+                fetch_bytes(url)
+
+    def test_accepts_asset_cdn_redirect(self):
+        self.assertIn("objects.githubusercontent.com", APPROVED_DOWNLOAD_HOSTS)
+        with patch("scripts.download_registry_mods.open_url", return_value=self.fake_response("https://objects.githubusercontent.com/file")):
+            self.assertEqual(fetch_bytes("https://github.com/owner/repo/releases/download/v1/file"), b"{}")

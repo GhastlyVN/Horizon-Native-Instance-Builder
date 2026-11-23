@@ -47,16 +47,35 @@ MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_MIXIN_BYTES = 1024 * 1024
 CHUNK_BYTES = 1024 * 1024
 
+APPROVED_DOWNLOAD_HOSTS = frozenset({
+    "api.github.com",
+    "github.com",
+    "horizon-rust.github.io",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+})
+
+
+def _validate_download_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme != "https" or host not in APPROVED_DOWNLOAD_HOSTS:
+        raise ValueError(f"Refusing unapproved download URL: {url}")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError(f"Refusing download URL with credentials: {url}")
+    if parsed.port is not None and parsed.port != 443:
+        raise ValueError(f"Refusing download URL with non-standard port: {url}")
+    return url
+
 
 def fetch_bytes(url: str, max_bytes: int = MAX_FILE_BYTES) -> bytes:
+    _validate_download_url(url)
     with open_url(
         url,
         timeout=180,
         accept="application/json, application/octet-stream",
     ) as response:
-        final = urllib.parse.urlparse(response.geturl())
-        if final.scheme != "https":
-            raise ValueError(f"Refusing non-HTTPS download URL: {response.geturl()}")
+        _validate_download_url(response.geturl())
         length = response.headers.get("Content-Length")
         if length and int(length) > max_bytes:
             raise ValueError(f"Download exceeds the {max_bytes}-byte safety limit: {url}")
