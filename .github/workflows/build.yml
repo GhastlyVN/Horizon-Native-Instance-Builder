@@ -15,9 +15,14 @@ on:
   workflow_dispatch:
     inputs:
       horizon_ref:
-        description: "Nightly tag from catalog/horizon-versions.json (nightly selects the newest)"
+        description: "Nightly tag in the selected Horizon repository (nightly selects the newest)"
         required: true
         default: "nightly"
+        type: string
+      horizon_source_repository:
+        description: "Repository to resolve the Nightly from; blank = upstream horizon-rust/horizon, otherwise OWNER/REPO"
+        required: false
+        default: ""
         type: string
       include_native_mods:
         description: "Build only mods verified for the exact selected Horizon commit"
@@ -117,10 +122,18 @@ jobs:
           path: build-report/input-inspection.json
           if-no-files-found: error
           retention-days: 14
-      - name: Resolve the selected official Horizon Nightly
+      - name: Resolve the selected Horizon Nightly
         env:
           HORIZON_REF: ${{ inputs.horizon_ref || 'nightly' }}
-        run: python scripts/resolve_horizon_revision.py --ref "$HORIZON_REF" --output build-report/horizon-commit.txt --report build-report/horizon-nightly.json
+          HORIZON_SOURCE_REPOSITORY: ${{ inputs.horizon_source_repository }}
+        shell: bash
+        run: |
+          HORIZON_SOURCE_REPOSITORY="${HORIZON_SOURCE_REPOSITORY:-horizon-rust/horizon}"
+          if [[ ! "$HORIZON_SOURCE_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "::error::horizon_source_repository must be OWNER/REPO or blank for upstream."
+            exit 1
+          fi
+          python scripts/resolve_horizon_revision.py --repository "$HORIZON_SOURCE_REPOSITORY" --ref "$HORIZON_REF" --output build-report/horizon-commit.txt --report build-report/horizon-nightly.json
       - name: Download newest registry mods verified on the selected Nightly
         if: ${{ inputs.include_native_mods != false }}
         run: python scripts/download_registry_mods.py --game 26.3 --horizon-commit "$(cat build-report/horizon-commit.txt)" --output input/mods-latest --report build-report/registry-mods.json
@@ -197,7 +210,12 @@ jobs:
             echo "::error::Validated Horizon commit is not an immutable full SHA-1."
             exit 1
           fi
-          git clone --filter=blob:none --no-checkout https://github.com/horizon-rust/horizon.git horizon-src
+          HORIZON_SOURCE_REPOSITORY="$(python -c 'import json; print(json.load(open("build-report/horizon-nightly.json", encoding="utf-8"))["repository"])')"
+          if [[ ! "$HORIZON_SOURCE_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "::error::The resolved Horizon Nightly source repository is not OWNER/REPO."
+            exit 1
+          fi
+          git clone --filter=blob:none --no-checkout "https://github.com/${HORIZON_SOURCE_REPOSITORY}.git" horizon-src
           git -C horizon-src fetch --depth=1 origin "$HORIZON_COMMIT"
           git -C horizon-src checkout --detach FETCH_HEAD
           ACTUAL_COMMIT="$(git -C horizon-src rev-parse HEAD)"
