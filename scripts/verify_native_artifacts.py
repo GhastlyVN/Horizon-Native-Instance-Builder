@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Verify that both native artifacts match the single validated Horizon revision."""
 import argparse
+import errno
 import hashlib
 import json
 import os
 import re
 import stat
 import struct
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -14,10 +16,12 @@ _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 def _report(path: Path) -> dict[str, str]:
-    if not path.is_file():
-        raise ValueError(f"missing build report: {path}")
+    try:
+        text = _read_regular_text(path, "utf-8", 1024 * 1024, "build report")
+    except FileNotFoundError as error:
+        raise ValueError(f"missing build report: {path}") from error
     fields: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in text.splitlines():
         if ": " not in line:
             continue
         key, value = line.split(": ", 1)
@@ -27,15 +31,17 @@ def _report(path: Path) -> dict[str, str]:
     return fields
 
 
-def _file_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int, int]:
-    return (
+def _file_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    identity = (
         metadata.st_dev,
         metadata.st_ino,
-        metadata.st_mode,
         metadata.st_size,
         metadata.st_mtime_ns,
-        metadata.st_ctime_ns,
     )
+    # Windows st_ctime is a creation timestamp, not a mutation timestamp.
+    if os.name == "nt":
+        return identity
+    return (*identity, metadata.st_ctime_ns)
 
 
 def _is_reparse_point(metadata: os.stat_result) -> bool:
@@ -45,36 +51,97 @@ def _is_reparse_point(metadata: os.stat_result) -> bool:
     )
 
 
-def _no_follow_opener(path, flags):
-    # shortcut: platforms without O_NOFOLLOW keep the lstat/reparse guard; upgrade to native handle identity if that race matters.
-    return os.open(path, flags | getattr(os, "O_NOFOLLOW", 0))
-
-
-def _open_binary(path: Path, target: str):
+@contextmanager
+def _open_regular_input(path: Path, description: str):
+    """Yield one verified regular-file handle; never read through a swapped link."""
+    path = Path(path)
     try:
-        return open(path, "rb", opener=_no_follow_opener)
+        before = path.lstat()
+    except FileNotFoundError:
+        raise
     except OSError as error:
-        raise ValueError(f"{target}: refusing symlink or reparse-point native client") from error
+        raise ValueError(f"{description}: cannot inspect input path: {path}: {error}") from error
+    if _is_reparse_point(before) or not stat.S_ISREG(before.st_mode):
+        raise ValueError(f"{description}: input must be a regular non-symlink file (symlink or reparse-point refused): {path}")
+
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        if getattr(error, "errno", None) in (errno.ELOOP, errno.ENXIO) or _is_reparse_point(before):
+            raise ValueError(f"{description}: refusing symlink or unsafe input: {path}") from error
+        raise ValueError(f"{description}: input could not be opened safely: {path}: {error}") from error
+
+    try:
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = None
+            opened = os.fstat(stream.fileno())
+            if (
+                _is_reparse_point(opened)
+                or not stat.S_ISREG(opened.st_mode)
+                or _file_identity(before) != _file_identity(opened)
+            ):
+                raise ValueError(f"{description}: input path changed while it was being opened: {path}")
+            try:
+                after_open = path.lstat()
+            except OSError as error:
+                raise ValueError(
+                    f"{description}: input path changed while it was being opened: {path}"
+                ) from error
+            if (
+                _is_reparse_point(after_open)
+                or not stat.S_ISREG(after_open.st_mode)
+                or _file_identity(after_open) != _file_identity(opened)
+            ):
+                raise ValueError(f"{description}: input path changed while it was being opened: {path}")
+
+            try:
+                yield stream
+            finally:
+                after_read = os.fstat(stream.fileno())
+                try:
+                    path_after = path.lstat()
+                except OSError as error:
+                    raise ValueError(
+                        f"{description}: input path changed during reading: {path}"
+                    ) from error
+                if (
+                    _file_identity(opened) != _file_identity(after_read)
+                    or _file_identity(after_read) != _file_identity(path_after)
+                    or _is_reparse_point(path_after)
+                    or not stat.S_ISREG(path_after.st_mode)
+                ):
+                    raise ValueError(f"{description}: input changed during reading: {path}")
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _read_regular_text(path: Path, encoding: str, limit: int, description: str) -> str:
+    with _open_regular_input(path, description) as stream:
+        raw = stream.read(limit + 1)
+        if len(raw) > limit:
+            raise ValueError(f"{description}: input exceeds {limit} bytes: {path}")
+    try:
+        return raw.decode(encoding)
+    except UnicodeDecodeError as error:
+        raise ValueError(f"{description}: input is not valid {encoding}: {path}") from error
+
+
+def _is_regular_non_link(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False
+    return stat.S_ISREG(metadata.st_mode) and not _is_reparse_point(metadata)
 
 
 def _inspect_binary(path: Path, target: str) -> tuple[int, str]:
-    """Validate the executable header and hash the same stable, regular file handle."""
-    try:
-        path_before = path.lstat()
-    except OSError as error:
-        raise ValueError(f"{target}: cannot inspect native client: {error}") from error
-    if _is_reparse_point(path_before):
-        raise ValueError(f"{target}: refusing symlink or reparse-point native client")
-
-    with _open_binary(path, target) as stream:
-        before = os.fstat(stream.fileno())
-        if not stat.S_ISREG(before.st_mode) or _is_reparse_point(before):
-            raise ValueError(f"{target}: native client is not a regular file")
-        # Compare path metadata with path metadata and handle metadata with handle
-        # metadata separately: Windows may expose different file IDs for lstat/fstat.
-        if not stat.S_ISREG(path_before.st_mode) or path_before.st_size != before.st_size:
-            raise ValueError(f"{target}: native client changed before verification")
-        size = before.st_size
+    """Validate the executable header and hash one verified regular file handle."""
+    with _open_regular_input(path, f"{target}: native client") as stream:
+        size = os.fstat(stream.fileno()).st_size
         if size <= 0:
             raise ValueError(f"{target}: native client binary is empty")
 
@@ -112,18 +179,7 @@ def _inspect_binary(path: Path, target: str) -> tuple[int, str]:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             bytes_read += len(chunk)
             digest.update(chunk)
-
-        after = os.fstat(stream.fileno())
-        try:
-            path_after = path.lstat()
-        except OSError as error:
-            raise ValueError(f"{target}: native client path changed during verification") from error
-        if (
-            _file_identity(before) != _file_identity(after)
-            or _file_identity(path_before) != _file_identity(path_after)
-            or _is_reparse_point(path_after)
-            or bytes_read != size
-        ):
+        if bytes_read != size:
             raise ValueError(f"{target}: native client changed during verification")
 
     return size, digest.hexdigest()
@@ -131,9 +187,12 @@ def _inspect_binary(path: Path, target: str) -> tuple[int, str]:
 
 def verify_artifacts(inputs: Path, linux: Path, windows: Path) -> dict:
     pinned_path = inputs / "build-report" / "horizon-commit.txt"
-    if not pinned_path.is_file():
-        raise ValueError(f"missing validated Horizon commit: {pinned_path}")
-    pinned_commit = pinned_path.read_text(encoding="ascii").strip().lower()
+    try:
+        pinned_commit = _read_regular_text(
+            pinned_path, "ascii", 128, "validated Horizon commit"
+        ).strip().lower()
+    except FileNotFoundError as error:
+        raise ValueError(f"missing validated Horizon commit: {pinned_path}") from error
     if not _COMMIT_RE.fullmatch(pinned_commit):
         raise ValueError("validated Horizon commit must be a full 40-character SHA-1")
 
@@ -147,7 +206,10 @@ def verify_artifacts(inputs: Path, linux: Path, windows: Path) -> dict:
         fields = _report(report_path)
         if fields.get("Target") != target:
             raise ValueError(f"{target}: build report target mismatch")
-        mod_inputs = list((inputs / "input" / "mods-latest").glob("*.hnmod"))
+        mod_inputs = [
+            path for path in (inputs / "input" / "mods-latest").glob("*.hnmod")
+            if _is_regular_non_link(path)
+        ]
         if not mod_inputs:
             raise ValueError("no registry-verified native mod packages were supplied")
         if (
