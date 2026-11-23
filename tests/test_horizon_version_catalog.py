@@ -36,6 +36,17 @@ class HorizonVersionCatalogTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "immutable source commit"):
             build_catalog([release("nightly", "not-a-sha")], 20)
 
+    def test_refuses_asset_urls_outside_github_release_downloads(self):
+        for url in (
+            "http://github.com/horizon-rust/horizon/releases/download/nightly/horizon-linux-x86_64.tar.gz",
+            "https://evil.example/horizon-linux-x86_64.tar.gz",
+            "https://github.com/horizon-rust/horizon/releases/download/nightly/wrong.tar.gz",
+        ):
+            item = release("nightly", "a" * 40)
+            item["assets"][0]["browser_download_url"] = url
+            with self.assertRaisesRegex(ValueError, "unsafe download URL"):
+                build_catalog([item], 20)
+
     def test_sorts_newest_first_and_honors_limit(self):
         items = [
             release("nightly-2026-11-08", "b" * 40, "2026-11-08T10:00:00Z"),
