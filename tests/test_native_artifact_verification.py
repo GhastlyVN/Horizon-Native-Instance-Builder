@@ -1,6 +1,6 @@
 import os
-import tempfile
 import struct
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -95,7 +95,8 @@ class NativeArtifactVerificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             inputs, linux, windows = self._fixture(Path(temp))
             binary = linux / "native-runtime" / "horizon-client"
-            original_open = open
+            original_fdopen = os.fdopen
+            fdopen_calls = 0
             mutated = False
 
             class MutatingStream:
@@ -119,20 +120,87 @@ class NativeArtifactVerificationTests(unittest.TestCase):
                     nonlocal mutated
                     data = self.stream.read(size)
                     if not mutated:
-                        with original_open(binary, "ab") as changed:
+                        with binary.open("ab") as changed:
                             changed.write(b"changed")
                         mutated = True
                     return data
 
-            def patched_open(path, mode="r", *args, **kwargs):
-                stream = original_open(path, mode, *args, **kwargs)
-                if path == binary and mode == "rb":
+            def patched_fdopen(descriptor, mode="r", *args, **kwargs):
+                nonlocal fdopen_calls
+                fdopen_calls += 1
+                stream = original_fdopen(descriptor, mode, *args, **kwargs)
+                # verify_artifacts opens the pinned commit, Linux report, then Linux binary.
+                if fdopen_calls == 3 and mode == "rb":
                     return MutatingStream(stream)
                 return stream
 
-            with patch("builtins.open", patched_open):
-                with self.assertRaisesRegex(ValueError, "changed during verification"):
+            with patch("scripts.verify_native_artifacts.os.fdopen", side_effect=patched_fdopen):
+                with self.assertRaisesRegex(ValueError, "changed during reading"):
                     verify_artifacts(inputs, linux, windows)
+            self.assertTrue(mutated)
+
+
+    def test_rejects_report_symlink_swap_before_read(self):
+        with tempfile.TemporaryDirectory() as temp:
+            inputs, linux, windows = self._fixture(Path(temp))
+            report = linux / "build-report" / "linux-x86_64" / "build.txt"
+            moved = report.with_name("build-original.txt")
+            victim = Path(temp) / "outside-report.txt"
+            victim.write_text("Target: linux-x86_64\\n", encoding="utf-8")
+            real_open = os.open
+            real_fdopen = os.fdopen
+            fdopen_calls = 0
+            swapped_report_read = False
+            swapped = False
+
+            class TrackReportRead:
+                def __init__(self, stream):
+                    self.stream = stream
+
+                def __enter__(self):
+                    self.stream.__enter__()
+                    return self
+
+                def __exit__(self, *args):
+                    return self.stream.__exit__(*args)
+
+                def fileno(self):
+                    return self.stream.fileno()
+
+                def read(self, size=-1):
+                    nonlocal swapped_report_read
+                    swapped_report_read = True
+                    return self.stream.read(size)
+
+            def replace_before_open(path, flags, *args, **kwargs):
+                nonlocal swapped
+                if Path(path) == report and not swapped:
+                    report.replace(moved)
+                    try:
+                        report.symlink_to(victim)
+                    except (OSError, NotImplementedError) as error:
+                        self.skipTest(f"symlink creation unavailable: {error}")
+                    swapped = True
+                return real_open(path, flags, *args, **kwargs)
+
+            def track_fdopen(descriptor, *args, **kwargs):
+                nonlocal fdopen_calls
+                fdopen_calls += 1
+                stream = real_fdopen(descriptor, *args, **kwargs)
+                # On Windows the reparse-point handle may be opened, but it must never be read.
+                if fdopen_calls == 2:
+                    return TrackReportRead(stream)
+                return stream
+
+            with patch("scripts.verify_native_artifacts.os.open", side_effect=replace_before_open):
+                with patch("scripts.verify_native_artifacts.os.fdopen", side_effect=track_fdopen):
+                    with self.assertRaisesRegex(ValueError, "changed while it was being opened|could not be opened safely|refusing symlink"):
+                        verify_artifacts(inputs, linux, windows)
+
+            self.assertTrue(swapped)
+            self.assertFalse(swapped_report_read)
+            self.assertEqual(victim.read_text(encoding="utf-8"), "Target: linux-x86_64\\n")
+
 
     def test_rejects_symlinked_native_binary(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -220,6 +288,32 @@ class NativeArtifactVerificationTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(ValueError, "non-regular"):
                     verify_native_artifacts.main()
+
+    def test_rejects_symlinked_pinned_commit(self):
+        with tempfile.TemporaryDirectory() as temp:
+            inputs, linux, windows = self._fixture(Path(temp))
+            pinned = inputs / "build-report" / "horizon-commit.txt"
+            real = inputs / "build-report" / "real-commit.txt"
+            real.write_text(pinned.read_text(encoding="ascii"), encoding="ascii")
+            pinned.unlink()
+            try:
+                pinned.symlink_to(real)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"symlink creation is unavailable: {error}")
+            with self.assertRaisesRegex(ValueError, "regular non-symlink file"):
+                verify_artifacts(inputs, linux, windows)
+
+    def test_ignores_symlinked_mod_inputs(self):
+        with tempfile.TemporaryDirectory() as temp:
+            inputs, linux, windows = self._fixture(Path(temp))
+            mod_dir = inputs / "input" / "mods-latest"
+            alias = mod_dir / "linked.hnmod"
+            try:
+                alias.symlink_to(mod_dir / "sample-1.0.0.hnmod")
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"symlink creation is unavailable: {error}")
+            result = verify_artifacts(inputs, linux, windows)
+            self.assertEqual(result["status"], "VERIFIED")
 
 
 if __name__ == "__main__":
