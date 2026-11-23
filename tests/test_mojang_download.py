@@ -19,6 +19,32 @@ class MojangDownloadTests(unittest.TestCase):
             with self.subTest(path=path), self.assertRaises(ValueError):
                 download_minecraft._safe_relative_path(path)
 
+    def test_rejects_redirect_to_a_non_official_host(self):
+        import io
+
+        class Redirected:
+            headers = {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def geturl(self):
+                return "https://evil.example/client.jar"
+
+            def read(self, _size):
+                return io.BytesIO(b"").read(0)
+
+        with patch.object(
+            download_minecraft.urllib.request, "urlopen", return_value=Redirected()
+        ), patch.object(download_minecraft.time, "sleep"):
+            with self.assertRaisesRegex(RuntimeError, "non-official"):
+                download_minecraft._read_url(
+                    "https://launcher.mojang.com/client.jar"
+                )
+
     def test_legacy_maven_coordinate_uses_official_library_repository(self):
         result = list(download_minecraft._library_downloads({"name": "org.example:sample:1.2.3"}))
         self.assertEqual(result[0]["path"], "org/example/sample/1.2.3/sample-1.2.3.jar")
