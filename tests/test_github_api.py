@@ -2,6 +2,7 @@ import json
 import os
 import unittest
 import urllib.error
+import urllib.request
 from io import BytesIO
 from unittest.mock import patch
 
@@ -98,6 +99,25 @@ class GithubApiTests(unittest.TestCase):
             "https://api.github.com", 429, "slow down", {"Retry-After": "7"}, BytesIO(b"")
         )
         self.assertEqual(retry_delay(error, 1), 7.0)
+
+    def test_authorization_is_not_forwarded_on_redirect(self):
+        captured = []
+
+        def fake_urlopen(request, timeout=60):
+            captured.append(request)
+            return FakeResponse()
+
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "secret"}, clear=True), patch(
+            "scripts.github_api.urllib.request.urlopen", side_effect=fake_urlopen
+        ):
+            open_url("https://api.github.com/repos/x/y", sleep=lambda _delay: None)
+
+        request = captured[0]
+        self.assertEqual(request.get_header("Authorization"), "Bearer secret")
+        redirected = urllib.request.HTTPRedirectHandler().redirect_request(
+            request, BytesIO(), 302, "Found", {}, "https://evil.example/leak"
+        )
+        self.assertIsNone(redirected.get_header("Authorization"))
 
 
 if __name__ == "__main__":
