@@ -1,5 +1,10 @@
+import json
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
+from scripts import scan_horizon_versions
 from scripts.scan_horizon_versions import build_catalog
 
 
@@ -67,6 +72,67 @@ class HorizonVersionCatalogTests(unittest.TestCase):
         bad["html_url"] = "https://evil.example/nightly"
         with self.assertRaisesRegex(ValueError, "unapproved release URL"):
             build_catalog([bad], 20)
+
+    def test_catalog_output_refuses_links_and_directories(self):
+        releases = [release("nightly", "a" * 40)]
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            victim = root / "victim"
+            victim.write_text("keep", encoding="utf-8")
+            output = root / "catalog.json"
+            output.symlink_to(victim)
+            with patch.object(scan_horizon_versions, "fetch_releases", return_value=releases), patch(
+                "sys.argv", ["scan", "--output", str(output)]
+            ):
+                with self.assertRaisesRegex(ValueError, "symlink"):
+                    scan_horizon_versions.main()
+            self.assertEqual(victim.read_text(encoding="utf-8"), "keep")
+
+            output.unlink()
+            output.mkdir()
+            with patch.object(scan_horizon_versions, "fetch_releases", return_value=releases), patch(
+                "sys.argv", ["scan", "--output", str(output)]
+            ):
+                with self.assertRaisesRegex(ValueError, "non-regular"):
+                    scan_horizon_versions.main()
+
+    def test_catalog_publish_replaces_a_raced_symlink_without_touching_target(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "catalog.json"
+            victim = root / "victim.json"
+            victim.write_text("keep", encoding="utf-8")
+            original_replace = scan_horizon_versions.os.replace
+
+            def insert_link_then_replace(source, destination):
+                Path(destination).symlink_to(victim)
+                return original_replace(source, destination)
+
+            with patch.object(
+                scan_horizon_versions.os, "replace", side_effect=insert_link_then_replace
+            ):
+                scan_horizon_versions.write_catalog_atomically(output, {"schema": 1})
+
+            self.assertEqual(victim.read_text(encoding="utf-8"), "keep")
+            self.assertEqual(json.loads(output.read_text(encoding="utf-8")), {"schema": 1})
+            self.assertFalse(output.is_symlink())
+            self.assertEqual(list(root.glob(".catalog.json.*.tmp")), [])
+
+    def test_catalog_replace_failure_preserves_previous_file_and_cleans_temp(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "catalog.json"
+            output.write_text("previous\n", encoding="utf-8")
+
+            with patch(
+                "scripts.scan_horizon_versions.os.replace",
+                side_effect=OSError("replace denied"),
+            ):
+                with self.assertRaisesRegex(OSError, "replace denied"):
+                    scan_horizon_versions.write_catalog_atomically(output, {"schema": 1})
+
+            self.assertEqual(output.read_text(encoding="utf-8"), "previous\n")
+            self.assertEqual(list(root.glob(".catalog.json.*.tmp")), [])
 
 
 if __name__ == "__main__":

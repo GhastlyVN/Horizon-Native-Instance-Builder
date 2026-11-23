@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import stat
+import tempfile
 import re
 import urllib.parse
 from pathlib import Path
@@ -107,6 +110,67 @@ def build_catalog(releases: list[dict], limit: int) -> dict:
     }
 
 
+def _metadata_is_link_or_reparse_point(metadata) -> bool:
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        getattr(metadata, "st_file_attributes", 0) & 0x400
+    )
+
+
+def refuse_linked_output(path: Path) -> None:
+    """Reject existing links, reparse points, directories, FIFOs and special outputs."""
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        raise ValueError(f"Cannot inspect catalog output safely: {path}: {error}") from error
+    if _metadata_is_link_or_reparse_point(metadata) or not stat.S_ISREG(metadata.st_mode):
+        raise ValueError(f"Refusing to write to a symlink/reparse point or non-regular path: {path}")
+
+
+def write_catalog_atomically(path: Path, catalog: dict) -> None:
+    """Publish a complete catalog with same-directory replace, never opening the leaf."""
+    path = Path(path)
+    if path.name in {"", ".", ".."}:
+        raise ValueError(f"Catalog output must name a file: {path}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path = path.parent.resolve(strict=False) / path.name
+    refuse_linked_output(path)
+
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temporary = Path(temporary_name)
+    descriptor_owned = True
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+            descriptor_owned = False
+            stream.write(json.dumps(catalog, indent=2, sort_keys=True))
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+
+        # os.replace replaces a link inserted after this check; it never follows its target.
+        refuse_linked_output(path)
+        os.replace(temporary, path)
+        temporary = None
+        if hasattr(os, "O_DIRECTORY"):
+            try:
+                directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+            except OSError:
+                pass
+    finally:
+        if descriptor_owned:
+            os.close(descriptor)
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
@@ -114,9 +178,12 @@ def main() -> None:
     args = parser.parse_args()
     if not 1 <= args.limit <= 100:
         raise SystemExit("--limit must be between 1 and 100.")
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output = output.parent.resolve(strict=False) / output.name
+    refuse_linked_output(output)
     catalog = build_catalog(fetch_releases(), args.limit)
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(catalog, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_catalog_atomically(output, catalog)
     print(f"Catalogued {len(catalog['versions'])} installable Horizon Nightly versions.")
     for item in catalog["versions"][:5]:
         print(f"- {item['tag']}: {item['commit']}")
