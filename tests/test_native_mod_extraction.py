@@ -3,13 +3,16 @@ import json
 import os
 import pathlib
 import shutil
+import struct
+import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
 from unittest.mock import patch
 
 from scripts.extract_native_mods import MAX_MANIFEST_BYTES, extract_bundle, main
-from scripts.prepare import validate_zip
+from scripts.prepare import MAX_CENTRAL_DIRECTORY_BYTES, validate_zip
 
 
 class NativeModExtractionTests(unittest.TestCase):
@@ -368,6 +371,104 @@ class NativeModExtractionTests(unittest.TestCase):
 
             self.assertEqual(sentinel.read_text(encoding="utf-8"), "old bundle")
             self.assertEqual([path.name for path in destination.iterdir()], ["sample"])
+
+    def test_rejects_oversized_archive_before_zip_parsing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            archive = root / "sample.hnmod"
+            self._bundle(archive)
+            destination = root / "out"
+
+            with (
+                patch("scripts.prepare.MAX_ARCHIVE_BYTES", 1),
+                patch(
+                    "scripts.extract_native_mods.zipfile.ZipFile",
+                    side_effect=AssertionError("oversized archive must not be parsed"),
+                ),
+            ):
+                with self.assertRaisesRegex(ValueError, "compressed size limit"):
+                    extract_bundle(archive, destination)
+
+            self.assertFalse(destination.exists())
+
+
+
+    def test_cli_extracts_valid_bundle_with_direct_execution_imports(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            source = root / "mods"
+            source.mkdir()
+            self._bundle(source / "sample.hnmod")
+            destination = root / "out"
+            script = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "extract_native_mods.py"
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    str(source),
+                    "--destination",
+                    str(destination),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((destination / "sample" / "horizon-native.json").is_file())
+            self.assertTrue((destination / "sample" / "mixins/sample_mod/horizon-mixin.toml").is_file())
+
+
+
+    def test_rejects_oversized_central_directory_before_zip_parsing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            archive = root / "sample.hnmod"
+            archive.write_bytes(
+                struct.pack(
+                    "<4s4H2LH",
+                    b"PK\x05\x06",
+                    0, 0, 0, 0,
+                    MAX_CENTRAL_DIRECTORY_BYTES + 1,
+                    0, 0,
+                )
+            )
+            destination = root / "out"
+
+            with patch.object(
+                zipfile,
+                "ZipFile",
+                side_effect=AssertionError("native importer must preflight before ZIP parsing"),
+            ):
+                with self.assertRaisesRegex(ValueError, "central directory exceeds the size limit"):
+                    extract_bundle(archive, destination)
+
+            self.assertFalse(destination.exists())
+
+
+
+    def test_rejects_symlink_archive_input_before_zip_parsing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            archive = root / "sample.hnmod"
+            self._bundle(archive)
+            alias = root / "alias.hnmod"
+            try:
+                alias.symlink_to(archive)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"symlinks are unavailable: {error}")
+
+            destination = root / "out"
+            with patch(
+                "scripts.prepare.zipfile.ZipFile",
+                side_effect=AssertionError("symlink source must be rejected before ZIP parsing"),
+            ):
+                with self.assertRaisesRegex(ValueError, "regular non-symlink file"):
+                    extract_bundle(alias, destination)
+            self.assertFalse(destination.exists())
+
 
 
 if __name__ == "__main__":

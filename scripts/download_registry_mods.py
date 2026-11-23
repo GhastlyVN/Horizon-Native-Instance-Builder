@@ -19,6 +19,11 @@ try:
 except ModuleNotFoundError:  # direct execution: python scripts/download_registry_mods.py
     from github_api import open_url
 
+try:
+    from scripts.prepare import preflight_zip_stream, validate_zip_archive
+except ModuleNotFoundError:  # direct execution: python scripts/download_registry_mods.py
+    from prepare import preflight_zip_stream, validate_zip_archive
+
 INDEX_URL = "https://horizon-rust.github.io/horizon-mods/index.json"
 HEALTH_URL = "https://github.com/horizon-rust/horizon-mods/releases/download/native-health/native-health.json"
 HEALTH_RELEASE_API = "https://api.github.com/repos/horizon-rust/horizon-mods/releases/tags/native-health"
@@ -36,6 +41,11 @@ DEFAULT_IDS = (
 )
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 MAX_FILE_BYTES = 64 * 1024 * 1024
+MAX_BUNDLE_MEMBER_BYTES = 64 * 1024 * 1024
+MAX_BUNDLE_TOTAL_BYTES = 256 * 1024 * 1024
+MAX_MANIFEST_BYTES = 1024 * 1024
+MAX_MIXIN_BYTES = 1024 * 1024
+CHUNK_BYTES = 1024 * 1024
 
 
 def fetch_bytes(url: str, max_bytes: int = MAX_FILE_BYTES) -> bytes:
@@ -162,40 +172,120 @@ def choose_versions(index: dict, health: dict, health_updated_at: str,
 
 
 def validate_bundle(data: bytes, expected: dict) -> None:
+    """Validate a downloaded .hnmod with the shared path policy and bounded CRC streaming."""
+    mod_id = expected["id"]
     if len(data) > MAX_FILE_BYTES:
-        raise ValueError(f"{expected['id']}: archive exceeds the {MAX_FILE_BYTES}-byte safety limit.")
+        raise ValueError(f"{mod_id}: archive exceeds the {MAX_FILE_BYTES}-byte safety limit.")
     if expected.get("size") is not None and len(data) != expected["size"]:
         raise ValueError(
-            f"{expected['id']}: file size mismatch; expected {expected['size']}, got {len(data)}."
+            f"{mod_id}: file size mismatch; expected {expected['size']}, got {len(data)}."
         )
     actual = hashlib.sha256(data).hexdigest()
     if actual != expected["sha256"]:
         raise ValueError(
-            f"{expected['id']}: SHA-256 mismatch; expected {expected['sha256']}, got {actual}."
+            f"{mod_id}: SHA-256 mismatch; expected {expected['sha256']}, got {actual}."
         )
+
+    stream = io.BytesIO(data)
     try:
-        with zipfile.ZipFile(io.BytesIO(data)) as archive:
-            bad = archive.testzip()
-            if bad:
-                raise ValueError(f"{expected['id']}: corrupt ZIP member {bad}.")
-            names = archive.namelist()
-            for name in names:
-                path = pathlib.PurePosixPath(name)
-                if path.is_absolute() or any(part in ("", ".", "..") for part in path.parts):
-                    raise ValueError(f"{expected['id']}: unsafe ZIP path {name!r}.")
-            manifests = [n for n in names if pathlib.PurePosixPath(n).name == "horizon-native.json"]
-            mixins = [n for n in names if pathlib.PurePosixPath(n).name == "horizon-mixin.toml"]
+        preflight_zip_stream(stream, f"{mod_id}.hnmod")
+        stream.seek(0)
+        with zipfile.ZipFile(stream) as archive:
+            _, names = validate_zip_archive(archive)
+            infos = archive.infolist()
+            if len(infos) != len(names):
+                raise ValueError(f"{mod_id}: ZIP entries changed during validation.")
+            members = dict(zip(names, infos))
+
+            def is_directory(info: zipfile.ZipInfo) -> bool:
+                return info.is_dir() or info.filename.replace(chr(92), "/").endswith("/")
+
+            manifests = [
+                name for name, info in members.items()
+                if not is_directory(info)
+                and pathlib.PurePosixPath(name).name == "horizon-native.json"
+            ]
+            mixins = [
+                name for name, info in members.items()
+                if not is_directory(info)
+                and pathlib.PurePosixPath(name).name == "horizon-mixin.toml"
+            ]
             if len(manifests) != 1 or len(mixins) != 1:
-                raise ValueError(f"{expected['id']}: expected one native manifest and one mixin manifest.")
-            manifest = json.loads(archive.read(manifests[0]))
+                raise ValueError(
+                    f"{mod_id}: expected one native manifest and one mixin manifest."
+                )
+
+            manifest_name, mixin_name = manifests[0], mixins[0]
+            captured = {
+                manifest_name: bytearray(),
+                mixin_name: bytearray(),
+            }
+            metadata_limits = {
+                manifest_name: MAX_MANIFEST_BYTES,
+                mixin_name: MAX_MIXIN_BYTES,
+            }
+            total_declared = 0
+            for name, info in members.items():
+                if is_directory(info):
+                    continue
+                if info.file_size < 0 or info.file_size > MAX_BUNDLE_MEMBER_BYTES:
+                    raise ValueError(
+                        f"{mod_id}: ZIP member exceeds the uncompressed size limit: {name}"
+                    )
+                total_declared += info.file_size
+                if total_declared > MAX_BUNDLE_TOTAL_BYTES:
+                    raise ValueError(
+                        f"{mod_id}: bundle exceeds the total uncompressed size limit "
+                        f"({MAX_BUNDLE_TOTAL_BYTES} bytes)."
+                    )
+                if name in metadata_limits and info.file_size > metadata_limits[name]:
+                    raise ValueError(
+                        f"{mod_id}: metadata file exceeds its size limit: {name}"
+                    )
+
+            total_actual = 0
+            for name, info in members.items():
+                if is_directory(info):
+                    continue
+                member_bytes = 0
+                with archive.open(info) as member:
+                    while True:
+                        chunk = member.read(CHUNK_BYTES)
+                        if not chunk:
+                            break
+                        member_bytes += len(chunk)
+                        total_actual += len(chunk)
+                        if member_bytes > MAX_BUNDLE_MEMBER_BYTES:
+                            raise ValueError(
+                                f"{mod_id}: ZIP member expanded beyond the size limit: {name}"
+                            )
+                        if total_actual > MAX_BUNDLE_TOTAL_BYTES:
+                            raise ValueError(
+                                f"{mod_id}: bundle expanded beyond the total size limit "
+                                f"({MAX_BUNDLE_TOTAL_BYTES} bytes)."
+                            )
+                        if name in captured:
+                            captured[name].extend(chunk)
+                if member_bytes != info.file_size:
+                    raise ValueError(
+                        f"{mod_id}: ZIP member size does not match its declaration: {name}"
+                    )
+
+            try:
+                manifest = json.loads(bytes(captured[manifest_name]).decode("utf-8"))
+                tomllib.loads(bytes(captured[mixin_name]).decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError, tomllib.TOMLDecodeError) as error:
+                raise ValueError(f"{mod_id}: invalid native manifest or mixin config: {error}") from error
+            if not isinstance(manifest, dict):
+                raise ValueError(f"{mod_id}: native manifest must be a JSON object.")
             if (
                 manifest.get("id") != expected["id"]
                 or manifest.get("version") != expected["version"]
                 or manifest.get("game") != expected["game"]
             ):
-                raise ValueError(f"{expected['id']}: archive manifest does not match registry metadata.")
+                raise ValueError(f"{mod_id}: archive manifest does not match registry metadata.")
     except zipfile.BadZipFile as error:
-        raise ValueError(f"{expected['id']}: invalid ZIP archive: {error}") from error
+        raise ValueError(f"{mod_id}: invalid ZIP archive: {error}") from error
 
 
 def download_registry_mods(output: pathlib.Path, report_path: pathlib.Path,

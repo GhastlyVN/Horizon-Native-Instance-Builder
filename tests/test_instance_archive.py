@@ -3,6 +3,7 @@ import json
 import os
 import pathlib
 import stat
+import struct
 import subprocess
 import tempfile
 from types import SimpleNamespace
@@ -13,6 +14,8 @@ import zipfile
 from scripts.prepare import (
     _portable_windows_component as prepare_portable_windows_component,
     discover_minecraft_root,
+    MAX_CENTRAL_DIRECTORY_BYTES,
+    preflight_zip_stream,
     validate_minecraft_archive,
     validate_minecraft_layout,
     validate_zip,
@@ -444,7 +447,7 @@ class InstanceArchiveTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "compressed size limit"):
                         validate_zip(archive)
 
-            with patch("scripts.extract_instance.MAX_ARCHIVE_BYTES", 1):
+            with patch("scripts.prepare.MAX_ARCHIVE_BYTES", 1):
                 with patch(
                     "scripts.extract_instance.zipfile.ZipFile",
                     side_effect=AssertionError("extractor parsed an oversized archive"),
@@ -462,6 +465,18 @@ class InstanceArchiveTests(unittest.TestCase):
             with patch("scripts.prepare.MAX_ARCHIVE_ENTRIES", 1):
                 with self.assertRaisesRegex(ValueError, "too many entries"):
                     validate_zip(archive)
+
+    def test_preflight_accepts_exactly_65535_zip_entries(self):
+        # CPython writes this valid boundary case without ZIP64; 0xFFFF is a
+        # real entry count here, not proof that a ZIP64 record is missing.
+        with tempfile.TemporaryDirectory() as temp:
+            archive = pathlib.Path(temp) / "65535-entries.zip"
+            with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as zf:
+                for index in range(0xFFFF):
+                    zf.writestr(f"entry-{index:05d}.bin", b"")
+            with archive.open("rb") as stream:
+                entries, _ = preflight_zip_stream(stream, archive)
+            self.assertEqual(entries, 0xFFFF)
 
     def test_preflight_rejects_excessive_uncompressed_size(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -866,6 +881,109 @@ class InstanceArchiveTests(unittest.TestCase):
 
             self.assertFalse(destination.exists())
             self.assertFalse((root / "game").exists())
+
+
+
+    def test_preflight_rejects_oversized_standard_central_directory_before_zipfile(self):
+        with tempfile.TemporaryDirectory() as temp:
+            archive = pathlib.Path(temp) / "oversized-central-directory.zip"
+            archive.write_bytes(
+                struct.pack(
+                    "<4s4H2LH",
+                    b"PK\x05\x06",
+                    0, 0, 0, 0,
+                    MAX_CENTRAL_DIRECTORY_BYTES + 1,
+                    0, 0,
+                )
+            )
+
+            with patch.object(
+                zipfile,
+                "ZipFile",
+                side_effect=AssertionError("central directory must be bounded before parsing"),
+            ):
+                with self.assertRaisesRegex(ValueError, "central directory exceeds the size limit"):
+                    validate_zip(archive)
+
+
+    def test_preflight_rejects_oversized_zip64_central_directory_before_zipfile(self):
+        with tempfile.TemporaryDirectory() as temp:
+            archive = pathlib.Path(temp) / "oversized-zip64-central-directory.zip"
+            # Keep the fixture small: patch the limit and use a structurally
+            # valid ZIP64 layout (central directory ends where the ZIP64
+            # EOCD record begins), so zipfile's consistency checks pass and
+            # our own size check is what rejects it.
+            central_directory = b"C" * 32
+            zip64_offset = len(central_directory)
+            zip64_record = struct.pack(
+                "<4sQ2H2I4Q",
+                b"PK\x06\x06",
+                44, 45, 45, 0, 0, 1, 1,
+                len(central_directory),
+                0,
+            )
+            locator = struct.pack("<4sIQI", b"PK\x06\x07", 0, zip64_offset, 1)
+            end_record = struct.pack(
+                "<4s4H2LH",
+                b"PK\x05\x06",
+                0, 0, 0xFFFF, 0xFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0,
+            )
+            archive.write_bytes(central_directory + zip64_record + locator + end_record)
+
+            with patch("scripts.prepare.MAX_CENTRAL_DIRECTORY_BYTES", 16):
+                with archive.open("rb") as stream:
+                    with self.assertRaisesRegex(ValueError, "central directory exceeds the size limit"):
+                        preflight_zip_stream(stream, archive)
+
+
+    def test_extractor_rejects_oversized_central_directory_before_zipfile(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            archive = root / "oversized-central-directory.zip"
+            archive.write_bytes(
+                struct.pack(
+                    "<4s4H2LH",
+                    b"PK\x05\x06",
+                    0, 0, 0, 0,
+                    MAX_CENTRAL_DIRECTORY_BYTES + 1,
+                    0, 0,
+                )
+            )
+            destination = root / "out"
+
+            with patch.object(
+                zipfile,
+                "ZipFile",
+                side_effect=AssertionError("extractor must preflight before ZIP parsing"),
+            ):
+                with self.assertRaisesRegex(SystemExit, "central directory exceeds the size limit"):
+                    extract_safe(archive, destination)
+
+            self.assertFalse(destination.exists())
+
+
+
+    def test_validator_and_extractor_reject_symlink_archive_before_zip_parse(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            archive = root / "source.zip"
+            with zipfile.ZipFile(archive, "w") as zf:
+                zf.writestr("game/versions/26.3/26.3.json", "{}")
+            alias = root / "alias.zip"
+            try:
+                alias.symlink_to(archive)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"symlinks are unavailable: {error}")
+
+            with patch(
+                "scripts.prepare.zipfile.ZipFile",
+                side_effect=AssertionError("symlink source must be rejected before ZIP parsing"),
+            ):
+                with self.assertRaisesRegex(ValueError, "regular non-symlink file"):
+                    validate_zip(alias)
+                with self.assertRaisesRegex(SystemExit, "regular non-symlink file"):
+                    extract_safe(alias, root / "out")
+            self.assertFalse((root / "out").exists())
 
 
 
