@@ -48,6 +48,10 @@ def _validate_url(url):
     official_host = host == "mojang.com" or host.endswith(".mojang.com") or host == "minecraft.net" or host.endswith(".minecraft.net")
     if parsed.scheme != "https" or not official_host:
         raise ValueError(f"Refusing non-official Mojang download URL: {url!r}")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError(f"Refusing Mojang download URL with credentials: {url!r}")
+    if parsed.port is not None and parsed.port != 443:
+        raise ValueError(f"Refusing Mojang download URL with non-standard port: {url!r}")
     return url
 
 
