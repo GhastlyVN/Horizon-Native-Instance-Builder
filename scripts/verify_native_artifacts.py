@@ -197,6 +197,13 @@ def verify_artifacts(inputs: Path, linux: Path, windows: Path) -> dict:
     }
 
 
+def refuse_linked_output(path: Path) -> None:
+    """Keep the verification report from being redirected or replaced by a link/directory."""
+    if path.is_symlink():
+        raise ValueError(f"Refusing to write through a symlink: {path}")
+    if path.exists() and not path.is_file():
+        raise ValueError(f"Refusing to write to a non-regular path: {path}")
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--inputs", type=Path, required=True)
@@ -205,6 +212,8 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     result = verify_artifacts(args.inputs, args.linux, args.windows)
+    # shortcut: the check and write are separate calls; upgrade to O_NOFOLLOW if outputs can be shared.
+    refuse_linked_output(args.output)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(result, indent=2, sort_keys=True) + "\n",
