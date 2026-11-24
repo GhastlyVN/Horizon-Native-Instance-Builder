@@ -84,13 +84,6 @@ class GlibcBaselineTests(unittest.TestCase):
                 verify_binary(binary, "2.35", readelf=_fake_readelf)
 
 
-def _fake_readelf(*args, **kwargs):
-    class Completed:
-        stdout = SAMPLE_READELF
-
-    return Completed()
-
-
     def test_readelf_uses_verified_descriptor_and_detects_swap(self):
         with tempfile.TemporaryDirectory() as temp:
             binary = Path(temp) / "horizon-client"
@@ -124,6 +117,13 @@ def _fake_readelf(*args, **kwargs):
             with self.assertRaisesRegex(ValueError, "SHA-256 does not match"):
                 verify_binary(binary, "2.35", readelf=_fake_readelf,
                               expected_sha256="0" * 64)
+
+def _fake_readelf(*args, **kwargs):
+    class Completed:
+        stdout = SAMPLE_READELF
+
+    return Completed()
+
 
 if __name__ == "__main__":
     unittest.main()
