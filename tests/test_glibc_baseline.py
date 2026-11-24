@@ -3,8 +3,10 @@ import os
 import struct
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
+from scripts import verify_glibc_baseline
 from scripts.verify_glibc_baseline import (
     evaluate,
     parse_version,
@@ -82,6 +84,21 @@ class GlibcBaselineTests(unittest.TestCase):
             binary.write_bytes(b"MZ" + struct.pack("<I", 0) + b"\x00" * 58)
             with self.assertRaisesRegex(ValueError, "not an ELF executable"):
                 verify_binary(binary, "2.35", readelf=_fake_readelf)
+
+    def test_main_publishes_report_through_safe_writer(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "report.json"
+            with patch.object(
+                verify_glibc_baseline, "verify_binary", return_value={"required_max": (2, 35), "baseline": (2, 35)}
+            ), patch.object(
+                verify_glibc_baseline, "write_report_atomically"
+            ) as writer, patch(
+                "sys.argv",
+                ["verify_glibc_baseline", "--binary", str(Path(temp) / "client"), "--output", str(output)],
+            ):
+                verify_glibc_baseline.main()
+            writer.assert_called_once()
+            self.assertEqual(writer.call_args[0][0], output)
 
 
     def test_readelf_uses_verified_descriptor_and_detects_swap(self):
