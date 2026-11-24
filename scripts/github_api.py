@@ -45,8 +45,10 @@ def build_headers(url: str, accept: str = "application/vnd.github+json") -> dict
 MAX_JSON_BYTES = 8 * 1024 * 1024
 
 
-def read_json_limited(url: str, *, max_bytes: int = MAX_JSON_BYTES, opener=open_url):
+def read_json_limited(url: str, *, max_bytes: int = MAX_JSON_BYTES, opener=None):
     """Fetch GitHub JSON with a byte cap and a final-host recheck."""
+    if opener is None:
+        opener = open_url
     parsed = urllib.parse.urlparse(url)
     if (
         parsed.scheme != "https"
