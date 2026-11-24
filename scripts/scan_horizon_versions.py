@@ -70,6 +70,8 @@ def build_catalog(releases: list[dict], limit: int) -> dict:
     seen = set()
     for release in releases:
         tag = release.get("tag_name", "")
+        if not isinstance(tag, str):
+            continue
         if tag in seen or not NIGHTLY_TAG.fullmatch(tag) or not release.get("prerelease"):
             continue
         assets = [
