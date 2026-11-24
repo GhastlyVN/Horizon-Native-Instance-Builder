@@ -460,21 +460,21 @@ def extract_safe(archive: pathlib.Path, destination: pathlib.Path) -> pathlib.Pa
                 with target.open("xb") as output:
                     created_files.append(target)
                     yield output
-                    return
-                with open_parent_directory(parts) as parent_descriptor:
-                    try:
-                        descriptor = os.open(
-                            parts[-1], member_open_flags, 0o666, dir_fd=parent_descriptor
-                        )
-                    except FileExistsError as error:
-                        raise SystemExit(f"Extraction destination already exists: {target}") from error
-                    except OSError as error:
-                        raise SystemExit(
-                            f"Existing symlink or reparse point in extraction path refused: {target}"
-                        ) from error
-                    with os.fdopen(descriptor, "wb") as output:
-                        created_files.append(target)
-                        yield output
+                return
+            with open_parent_directory(parts) as parent_descriptor:
+                try:
+                    descriptor = os.open(
+                        parts[-1], member_open_flags, 0o666, dir_fd=parent_descriptor
+                    )
+                except FileExistsError as error:
+                    raise SystemExit(f"Extraction destination already exists: {target}") from error
+                except OSError as error:
+                    raise SystemExit(
+                        f"Existing symlink or reparse point in extraction path refused: {target}"
+                    ) from error
+                with os.fdopen(descriptor, "wb") as output:
+                    created_files.append(target)
+                    yield output
 
         try:
             # Create components one at a time so rollback owns only successful mkdir calls.
