@@ -9,6 +9,7 @@ reuse the workflow's ``GITHUB_TOKEN`` when present and retry transient statuses.
 from __future__ import annotations
 
 import datetime
+import json
 import email.utils
 import os
 import time
@@ -40,6 +41,46 @@ def build_headers(url: str, accept: str = "application/vnd.github+json") -> dict
         headers["Authorization"] = f"Bearer {value}"
     return headers
 
+
+MAX_JSON_BYTES = 8 * 1024 * 1024
+
+
+def read_json_limited(url: str, *, max_bytes: int = MAX_JSON_BYTES, opener=None):
+    """Fetch GitHub JSON with a byte cap and a final-host recheck."""
+    if opener is None:
+        opener = open_url
+    parsed = urllib.parse.urlparse(url)
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname not in TOKEN_HOSTS
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.port not in (None, 443)
+    ):
+        raise ValueError(f"Refusing non-GitHub API JSON URL: {url}")
+    with opener(url) as response:
+        geturl = getattr(response, "geturl", None)
+        if geturl is not None:
+            final = urllib.parse.urlparse(geturl())
+            if (final.scheme, final.hostname, final.port) != (
+                "https", parsed.hostname, parsed.port
+            ):
+                raise ValueError(f"Refusing redirect to a non-GitHub host: {geturl()}")
+        headers = getattr(response, "headers", None) or {}
+        declared = headers.get("Content-Length")
+        if declared and int(declared) > max_bytes:
+            raise ValueError(
+                f"GitHub JSON response exceeds the {max_bytes}-byte safety limit: {url}"
+            )
+        data = response.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise ValueError(
+            f"GitHub JSON response exceeds the {max_bytes}-byte safety limit: {url}"
+        )
+    try:
+        return json.loads(data)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"Invalid JSON from {url}: {error}") from error
 
 def retry_delay(error: Exception, attempt: int) -> float:
     headers = getattr(error, "headers", None)

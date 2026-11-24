@@ -12,9 +12,9 @@ import urllib.parse
 from pathlib import Path
 
 try:
-    from scripts.github_api import open_url
+    from scripts.github_api import open_url, read_json_limited
 except ModuleNotFoundError:  # direct execution: python scripts/scan_horizon_versions.py
-    from github_api import open_url
+    from github_api import open_url, read_json_limited
 
 API = "https://api.github.com/repos/horizon-rust/horizon/releases?per_page=100"
 SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -34,8 +34,7 @@ def _github_https_url(value: str) -> bool:
 
 
 def fetch_releases() -> list[dict]:
-    with open_url(API) as response:
-        value = json.loads(response.read())
+    value = read_json_limited(API, opener=open_url)
     if not isinstance(value, list):
         raise ValueError("Horizon releases endpoint did not return a list.")
     return value
