@@ -288,7 +288,8 @@ def _open_snapshot_zip(path: pathlib.Path):
 
 
 def package(instance: pathlib.Path, binary: pathlib.Path, mods: pathlib.Path,
-            target: str, horizon_commit: str, output: pathlib.Path) -> dict:
+            target: str, horizon_commit: str, output: pathlib.Path,
+            *, binary_sha256: str | None = None) -> dict:
     if target not in ("windows-x86_64", "linux-x86_64"):
         raise ValueError(f"Unsupported native build target: {target!r}")
     if not instance.is_file():
@@ -297,6 +298,13 @@ def package(instance: pathlib.Path, binary: pathlib.Path, mods: pathlib.Path,
         raise ValueError(f"Missing native client binary: {binary}")
     if not re.fullmatch(r"[0-9a-f]{40}", horizon_commit):
         raise ValueError("horizon_commit must be a full 40-character commit SHA")
+    expected_binary_sha256 = None
+    if binary_sha256 is not None:
+        if not isinstance(binary_sha256, str):
+            raise ValueError("binary_sha256 must be a SHA-256 string")
+        expected_binary_sha256 = binary_sha256.strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_binary_sha256):
+            raise ValueError("binary_sha256 must be 64 hexadecimal characters")
     instance_id = f"horizon-native-{horizon_commit[:7]}"
     mod_files = []
     for candidate in sorted(mods.glob("*.hnmod")):
@@ -432,6 +440,12 @@ Native builds execute with your user permissions. Only import builds and mods yo
                             os.fstat(binary_stream.fileno())
                         ):
                             raise ValueError(f"Native client changed while packaging: {binary}")
+                        if (expected_binary_sha256 is not None
+                                and binary_hash != expected_binary_sha256):
+                            raise ValueError(
+                                "Native client digest does not match the verified build report: "
+                                f"{binary}"
+                            )
                         manifest["native_client"]["sha256"] = binary_hash
                         manifest["native_client"]["bytes"] = binary_bytes
 
@@ -489,9 +503,12 @@ def main() -> None:
                         choices=("windows-x86_64", "linux-x86_64"))
     parser.add_argument("--horizon-commit", required=True)
     parser.add_argument("--output", type=pathlib.Path, required=True)
+    parser.add_argument("--binary-sha256", required=True,
+                        help="SHA-256 of the client from native-build-verification.json")
     args = parser.parse_args()
     result = package(args.instance, args.binary, args.mods, args.target,
-                     args.horizon_commit, args.output)
+                     args.horizon_commit, args.output,
+                     binary_sha256=args.binary_sha256)
     print(json.dumps({
         "status": "PACKAGED_DROP_IN_INSTANCE",
         "output": str(args.output),

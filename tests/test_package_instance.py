@@ -606,5 +606,22 @@ class PackageInstanceTests(unittest.TestCase):
 
 
 
+    def test_package_rejects_client_digest_mismatch_before_publishing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            instance = root / "instance.zip"
+            with zipfile.ZipFile(instance, "w") as archive:
+                archive.writestr("options.txt", "renderDistance:8")
+            binary = root / "horizon-client.exe"
+            binary.write_bytes(b"verified executable")
+            mods = root / "mods"
+            mods.mkdir()
+            output = root / "bundle.zip"
+
+            with self.assertRaisesRegex(ValueError, "digest does not match"):
+                package(instance, binary, mods, "windows-x86_64",
+                        "a" * 40, output, binary_sha256="0" * 64)
+            self.assertFalse(output.exists())
+
 if __name__ == "__main__":
     unittest.main()

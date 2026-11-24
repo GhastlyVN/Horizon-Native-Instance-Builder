@@ -425,11 +425,20 @@ jobs:
             --linux verified/native-build-linux-x86_64 \
             --windows verified/native-build-windows-x86_64 \
             --output build-report/native-build-verification.json
+      - name: Export verified native client digests
+        run: |
+          python - <<'PY' >> "$GITHUB_ENV"
+          import json
+          report = json.load(open('build-report/native-build-verification.json', encoding='utf-8'))
+          print('WINDOWS_NATIVE_SHA256=' + report['targets']['windows-x86_64']['sha256'])
+          print('LINUX_NATIVE_SHA256=' + report['targets']['linux-x86_64']['sha256'])
+          PY
       - name: Enforce the documented GLIBC baseline on the Linux artifact
         run: |
           python scripts/verify_glibc_baseline.py \
             --binary verified/native-build-linux-x86_64/native-runtime/horizon-client \
             --max-glibc "$LINUX_GLIBC_BASELINE" \
+            --expected-sha256 "$LINUX_NATIVE_SHA256" \
             --output build-report/linux-glibc-baseline.json
       - name: Smoke-test the Linux artifact on the oldest supported image
         run: |
@@ -450,8 +459,8 @@ jobs:
             '
       - name: Package Windows and Linux instance bundles
         run: |
-          python scripts/package_instance.py --instance verified/inputs/input/instance/instance.zip --binary verified/native-build-windows-x86_64/native-runtime/horizon-client.exe --mods verified/inputs/input/mods-latest --target windows-x86_64 --horizon-commit "$(cat verified/inputs/build-report/horizon-commit.txt)" --output dist/horizon-instance-windows-x86_64.zip
-          python scripts/package_instance.py --instance verified/inputs/input/instance/instance.zip --binary verified/native-build-linux-x86_64/native-runtime/horizon-client --mods verified/inputs/input/mods-latest --target linux-x86_64 --horizon-commit "$(cat verified/inputs/build-report/horizon-commit.txt)" --output dist/horizon-instance-linux-x86_64.zip
+          python scripts/package_instance.py --instance verified/inputs/input/instance/instance.zip --binary verified/native-build-windows-x86_64/native-runtime/horizon-client.exe --mods verified/inputs/input/mods-latest --target windows-x86_64 --horizon-commit "$(cat verified/inputs/build-report/horizon-commit.txt)" --binary-sha256 "$WINDOWS_NATIVE_SHA256" --output dist/horizon-instance-windows-x86_64.zip
+          python scripts/package_instance.py --instance verified/inputs/input/instance/instance.zip --binary verified/native-build-linux-x86_64/native-runtime/horizon-client --mods verified/inputs/input/mods-latest --target linux-x86_64 --horizon-commit "$(cat verified/inputs/build-report/horizon-commit.txt)" --binary-sha256 "$LINUX_NATIVE_SHA256" --output dist/horizon-instance-linux-x86_64.zip
           mkdir -p dist/drop-in-windows dist/drop-in-linux
           python -c "import zipfile; zipfile.ZipFile('dist/horizon-instance-windows-x86_64.zip').extractall('dist/drop-in-windows')"
           python -c "import zipfile; zipfile.ZipFile('dist/horizon-instance-linux-x86_64.zip').extractall('dist/drop-in-linux')"
