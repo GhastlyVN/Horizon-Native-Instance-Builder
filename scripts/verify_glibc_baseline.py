@@ -10,6 +10,7 @@ GLIBC than the documented baseline.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -97,8 +98,16 @@ def evaluate(readelf_output: str, baseline: str) -> dict:
     }
 
 
-def read_versions(binary: Path, readelf: str = "readelf") -> str:
+def read_versions(binary: Path, readelf: str = "readelf",
+                  expected_sha256: str | None = None) -> str:
     """Run ``readelf --version-info`` against one verified binary handle."""
+    expected = None
+    if expected_sha256 is not None:
+        if not isinstance(expected_sha256, str):
+            raise ValueError("expected_sha256 must be a SHA-256 string")
+        expected = expected_sha256.strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", expected):
+            raise ValueError("expected_sha256 must be 64 hexadecimal characters")
     if not binary.is_file():
         raise ValueError(f"missing native client binary: {binary}")
     try:
@@ -114,6 +123,14 @@ def read_versions(binary: Path, readelf: str = "readelf") -> str:
             raise ValueError(f"{binary}: native client changed while it was being opened")
         if stream.read(4) != ELF_MAGIC:
             raise ValueError(f"{binary}: not an ELF executable")
+        if expected is not None:
+            stream.seek(0)
+            actual = hashlib.file_digest(stream, "sha256").hexdigest()
+            stream.seek(0)
+            if actual != expected:
+                raise ValueError(
+                    f"{binary}: native client SHA-256 does not match the verified build report"
+                )
         # Keep readelf on this descriptor: reopening the path would certify a swapped file.
         command = [readelf, "--wide", "--version-info", f"/proc/self/fd/{descriptor}"]
         if callable(readelf):
@@ -150,9 +167,10 @@ def read_versions(binary: Path, readelf: str = "readelf") -> str:
 
 
 
-def verify_binary(binary: Path, baseline: str, readelf: str = "readelf") -> dict:
+def verify_binary(binary: Path, baseline: str, readelf: str = "readelf",
+                  expected_sha256: str | None = None) -> dict:
     """Verify one ELF binary and return the report used by the release gate."""
-    report = evaluate(read_versions(binary, readelf), baseline)
+    report = evaluate(read_versions(binary, readelf, expected_sha256), baseline)
     report["binary"] = binary.name
     return report
 
@@ -163,9 +181,12 @@ def main() -> None:
     parser.add_argument("--max-glibc", default=DEFAULT_BASELINE)
     parser.add_argument("--readelf", default="readelf")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--expected-sha256", type=str,
+                        help="SHA-256 from native-build-verification.json")
     args = parser.parse_args()
 
-    report = verify_binary(args.binary, args.max_glibc, args.readelf)
+    report = verify_binary(args.binary, args.max_glibc, args.readelf,
+                           args.expected_sha256)
     if args.output is not None:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(
