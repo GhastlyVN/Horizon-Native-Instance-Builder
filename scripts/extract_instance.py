@@ -399,67 +399,67 @@ def extract_safe(archive: pathlib.Path, destination: pathlib.Path) -> pathlib.Pa
                 else:
                     created_directories.append(directory)
 
-            # Descriptor-relative writes make the final checks and the open one operation:
-            # a checked parent directory can be renamed after lstat() but the open below still
-            # resolves through the descriptor opened here, not through the mutable path.
-            use_directory_descriptors = (
-                os.name == "posix"
-                and hasattr(os, "O_NOFOLLOW")
-                and hasattr(os, "O_DIRECTORY")
-            )
-            if use_directory_descriptors:
-                directory_open_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-                member_open_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-            else:
-                directory_open_flags = 0
-                member_open_flags = 0
+        # Descriptor-relative writes make the final checks and the open one operation:
+        # a checked parent directory can be renamed after lstat() but the open below still
+        # resolves through the descriptor opened here, not through the mutable path.
+        use_directory_descriptors = (
+            os.name == "posix"
+            and hasattr(os, "O_NOFOLLOW")
+            and hasattr(os, "O_DIRECTORY")
+        )
+        if use_directory_descriptors:
+            directory_open_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            member_open_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+        else:
+            directory_open_flags = 0
+            member_open_flags = 0
 
-            @contextlib.contextmanager
-            def open_parent_directory(parts):
-                descriptors = []
+        @contextlib.contextmanager
+        def open_parent_directory(parts):
+            descriptors = []
+            try:
                 try:
+                    descriptor = os.open(root, directory_open_flags)
+                except OSError as error:
+                    raise SystemExit(
+                        f"Extraction root changed while opening it: {root}"
+                    ) from error
+                descriptors.append(descriptor)
+                for index, part in enumerate(parts[:-1], 1):
+                    directory = root.joinpath(*parts[:index])
                     try:
-                        descriptor = os.open(root, directory_open_flags)
-                    except OSError as error:
-                        raise SystemExit(
-                            f"Extraction root changed while opening it: {root}"
-                        ) from error
-                    descriptors.append(descriptor)
-                    for index, part in enumerate(parts[:-1], 1):
-                        directory = root.joinpath(*parts[:index])
+                        child = os.open(part, directory_open_flags, dir_fd=descriptor)
+                    except FileNotFoundError:
+                        try:
+                            os.mkdir(part, dir_fd=descriptor)
+                        except FileExistsError:
+                            pass
+                        else:
+                            created_directories.append(directory)
                         try:
                             child = os.open(part, directory_open_flags, dir_fd=descriptor)
-                        except FileNotFoundError:
-                            try:
-                                os.mkdir(part, dir_fd=descriptor)
-                            except FileExistsError:
-                                pass
-                            else:
-                                created_directories.append(directory)
-                            try:
-                                child = os.open(part, directory_open_flags, dir_fd=descriptor)
-                            except OSError as error:
-                                raise SystemExit(
-                                    f"Existing symlink or reparse point in extraction path refused: {directory}"
-                                ) from error
                         except OSError as error:
                             raise SystemExit(
                                 f"Existing symlink or reparse point in extraction path refused: {directory}"
                             ) from error
-                        descriptors.append(child)
-                        descriptor = child
-                    yield descriptor
-                finally:
-                    for descriptor in reversed(descriptors):
-                        os.close(descriptor)
+                    except OSError as error:
+                        raise SystemExit(
+                            f"Existing symlink or reparse point in extraction path refused: {directory}"
+                        ) from error
+                    descriptors.append(child)
+                    descriptor = child
+                yield descriptor
+            finally:
+                for descriptor in reversed(descriptors):
+                    os.close(descriptor)
 
-            @contextlib.contextmanager
-            def open_member(parts, target):
-                if not use_directory_descriptors:
-                    ensure_directory(target.parent, stop=root)
-                    with target.open("xb") as output:
-                        created_files.append(target)
-                        yield output
+        @contextlib.contextmanager
+        def open_member(parts, target):
+            if not use_directory_descriptors:
+                ensure_directory(target.parent, stop=root)
+                with target.open("xb") as output:
+                    created_files.append(target)
+                    yield output
                     return
                 with open_parent_directory(parts) as parent_descriptor:
                     try:
