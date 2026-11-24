@@ -185,8 +185,50 @@ def _inspect_binary(path: Path, target: str) -> tuple[int, str]:
     return size, digest.hexdigest()
 
 
-def verify_artifacts(inputs: Path, linux: Path, windows: Path) -> dict:
-    pinned_path = inputs / "build-report" / "horizon-commit.txt"
+def _digest_regular_file(path: Path, description: str) -> tuple[int, str]:
+    digest = hashlib.sha256()
+    size = 0
+    with _open_regular_input(path, description) as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            size += len(chunk)
+            digest.update(chunk)
+    return size, digest.hexdigest()
+
+
+def _load_registry_selection(inputs: Path, pinned_commit: str) -> list[dict]:
+    path = inputs / "build-report" / "registry-mods.json"
+    try:
+        text = _read_regular_text(path, "utf-8", 4 * 1024 * 1024, "registry mod report")
+    except FileNotFoundError as error:
+        raise ValueError(f"missing registry mod report: {path}") from error
+    try:
+        report = json.loads(text)
+    except json.JSONDecodeError as error:
+        raise ValueError(f"{path}: invalid registry mod report: {error}") from error
+    if not isinstance(report, dict) or report.get("schema") != 1:
+        raise ValueError(f"{path}: unsupported registry mod report schema")
+    if str(report.get("horizon_commit", "")).lower() != pinned_commit:
+        raise ValueError(f"{path}: registry mod report commit mismatch")
+    selected = report.get("selected")
+    if not isinstance(selected, list):
+        raise ValueError(f"{path}: registry mod selection must be a list")
+    for item in selected:
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("file"), str)
+            or not item["file"]
+            or Path(item["file"]).name != item["file"]
+            or not isinstance(item.get("sha256"), str)
+            or len(item["sha256"]) != 64
+            or not isinstance(item.get("size"), int)
+            or isinstance(item["size"], bool)
+            or item["size"] < 0
+        ):
+            raise ValueError(f"{path}: invalid registry mod selection entry")
+    return selected
+
+
+def verify_artifacts(inputs: Path, linux: Path, windows: Path) -> dict:    pinned_path = inputs / "build-report" / "horizon-commit.txt"
     try:
         pinned_commit = _read_regular_text(
             pinned_path, "ascii", 128, "validated Horizon commit"
