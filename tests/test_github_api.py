@@ -106,6 +106,18 @@ class GithubApiTests(unittest.TestCase):
         )
         self.assertEqual(retry_delay(error, 1), 7.0)
 
+    def test_retry_delay_honours_http_date_retry_after(self):
+        future = urllib.error.HTTPError(
+            "https://api.github.com", 429, "slow down",
+            {"Retry-After": "Wed, 21 Oct 2099 07:28:00 GMT"}, BytesIO(b""),
+        )
+        past = urllib.error.HTTPError(
+            "https://api.github.com", 429, "slow down",
+            {"Retry-After": "Wed, 21 Oct 2009 07:28:00 GMT"}, BytesIO(b""),
+        )
+        self.assertEqual(retry_delay(future, 1), 60.0)
+        self.assertEqual(retry_delay(past, 1), 0.0)
+
     def test_revision_outputs_refuse_links_and_directories(self):
         release = {"tag": "nightly", "name": "Nightly", "commit": "a" * 40}
         with TemporaryDirectory() as tmp:
