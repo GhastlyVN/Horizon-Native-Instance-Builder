@@ -1,3 +1,4 @@
+import contextlib
 import hashlib
 import json
 import os
@@ -20,6 +21,7 @@ from scripts.prepare import (
     validate_minecraft_layout,
     validate_zip,
 )
+from scripts import extract_instance
 from scripts.extract_instance import (
     _metadata_is_link_or_reparse_point,
     _portable_windows_component as extract_portable_windows_component,
@@ -984,6 +986,48 @@ class InstanceArchiveTests(unittest.TestCase):
                 with self.assertRaisesRegex(SystemExit, "regular non-symlink file"):
                     extract_safe(alias, root / "out")
             self.assertFalse((root / "out").exists())
+
+
+
+    def test_extractor_reads_the_preflighted_snapshot_after_source_mutation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            archive = root / "instance.zip"
+            with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as zf:
+                zf.writestr("game/versions/26.3/26.3.json", "{}")
+                zf.writestr("game/options.txt", "safe")
+            destination = root / "out"
+            original_open = extract_instance._open_bounded_zip
+
+            @contextlib.contextmanager
+            def mutate_source_after_preflight(path):
+                with original_open(path) as validated:
+                    before = archive.stat()
+                    payload = bytearray(archive.read_bytes())
+                    offset = payload.find(b"safe")
+                    self.assertGreaterEqual(offset, 0)
+                    payload[offset:offset + 4] = b"evil"
+                    with archive.open("r+b") as stream:
+                        stream.seek(0)
+                        stream.write(payload)
+                        stream.truncate()
+                    # Match Windows identity semantics: same inode, size and restored mtime.
+                    os.utime(archive, ns=(before.st_atime_ns, before.st_mtime_ns))
+                    yield validated
+
+            windows_identity = lambda metadata: (
+                metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns
+            )
+            with patch.object(extract_instance, "_file_identity", side_effect=windows_identity):
+                with patch.object(
+                    extract_instance,
+                    "_open_bounded_zip",
+                    mutate_source_after_preflight,
+                ):
+                    game_root = extract_safe(archive, destination)
+
+            self.assertEqual((game_root / "options.txt").read_text(encoding="utf-8"), "safe")
+            self.assertEqual((destination / "game" / "options.txt").read_text(encoding="utf-8"), "safe")
 
 
 

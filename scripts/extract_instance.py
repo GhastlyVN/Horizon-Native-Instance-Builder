@@ -5,13 +5,14 @@ import contextlib
 import os
 import pathlib
 import stat
+import tempfile
 import unicodedata
 import zipfile
 
 try:
-    from scripts.prepare import open_regular_zip_source, preflight_zip_stream, validate_zip_archive
+    from scripts.prepare import MAX_ARCHIVE_BYTES, open_regular_zip_source, preflight_zip_stream, validate_zip_archive
 except ModuleNotFoundError:  # direct execution: python scripts/extract_instance.py
-    from prepare import open_regular_zip_source, preflight_zip_stream, validate_zip_archive
+    from prepare import MAX_ARCHIVE_BYTES, open_regular_zip_source, preflight_zip_stream, validate_zip_archive
 
 MAX_ARCHIVE_ENTRIES = 100_000
 MAX_MEMBER_UNCOMPRESSED_BYTES = 2 * 1024**3
@@ -162,16 +163,51 @@ def _validate_existing_destination_collisions(root, validated_entries):
 
 @contextlib.contextmanager
 def _open_bounded_zip(archive):
-    """Use the shared no-follow source and ZIP validation policy before extraction."""
+    """Validate and extract one immutable snapshot of a regular, no-follow ZIP source."""
     archive = pathlib.Path(archive)
     with contextlib.ExitStack() as stack:
         try:
-            stream = stack.enter_context(open_regular_zip_source(archive))
+            source = stack.enter_context(open_regular_zip_source(archive))
         except ValueError as error:
             raise SystemExit(f"Invalid ZIP archive {archive}: {error}") from error
+
+        # Parsing a path-backed ZIP and extracting it later from the same open handle still
+        # leaves a same-size/same-mtime mutation window on Windows. Snapshot the bounded source
+        # first, then run the shared validator and every member read against those exact bytes.
+        before = os.fstat(source.fileno())
+        source_identity = _file_identity(before)
+        if before.st_size > MAX_ARCHIVE_BYTES:
+            raise SystemExit(
+                f"ZIP archive exceeds the compressed size limit ({MAX_ARCHIVE_BYTES} bytes)"
+            )
+        snapshot = stack.enter_context(tempfile.TemporaryFile(mode="w+b"))
+        copied = 0
         try:
-            preflight_zip_stream(stream, archive)
-            zf = zipfile.ZipFile(stream)
+            source.seek(0)
+            while chunk := source.read(1024 * 1024):
+                copied += len(chunk)
+                if copied > MAX_ARCHIVE_BYTES:
+                    raise SystemExit(
+                        f"ZIP archive exceeds the compressed size limit ({MAX_ARCHIVE_BYTES} bytes)"
+                    )
+                snapshot.write(chunk)
+            snapshot.flush()
+            snapshot.seek(0)
+            after = os.fstat(source.fileno())
+            path_after = archive.lstat()
+        except OSError as error:
+            raise SystemExit(f"Invalid ZIP archive {archive}: {error}") from error
+        if (
+            _file_identity(after) != source_identity
+            or _metadata_is_link_or_reparse_point(path_after)
+            or not stat.S_ISREG(path_after.st_mode)
+            or _file_identity(path_after) != source_identity
+        ):
+            raise SystemExit(f"ZIP archive changed while creating its extraction snapshot: {archive}")
+
+        try:
+            preflight_zip_stream(snapshot, archive)
+            zf = zipfile.ZipFile(snapshot)
         except (OSError, zipfile.BadZipFile, ValueError) as error:
             raise SystemExit(f"Invalid ZIP archive {archive}: {error}") from error
         with zf:
