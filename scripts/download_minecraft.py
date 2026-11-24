@@ -55,8 +55,17 @@ def _validate_url(url):
     return url
 
 
+def _require_sha1(value, label):
+    """Require a pinned digest; missing upstream hashes must never mean skip verification."""
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", value):
+        raise ValueError(f"Missing or invalid Mojang SHA-1 for {label}")
+    return value.lower()
+
+
 def _read_url(url, expected_size=None, expected_sha1=None, max_bytes=MAX_DOWNLOAD_BYTES):
     _validate_url(url)
+    if expected_sha1 is not None:
+        expected_sha1 = _require_sha1(expected_sha1, url)
     last_error = None
     for attempt in range(3):
         try:
@@ -92,9 +101,12 @@ def _read_url(url, expected_size=None, expected_sha1=None, max_bytes=MAX_DOWNLOA
 
 
 def _write_verified(root, relative, url, size=None, sha1=None):
+    sha1 = _require_sha1(sha1, relative)
     destination = root / _safe_relative_path(relative)
     destination.parent.mkdir(parents=True, exist_ok=True)
     _validate_url(url)
+    if expected_sha1 is not None:
+        expected_sha1 = _require_sha1(expected_sha1, url)
     last_error = None
     for attempt in range(3):
         temporary = destination.with_name(destination.name + ".part")
@@ -120,7 +132,7 @@ def _write_verified(root, relative, url, size=None, sha1=None):
                     digest.update(chunk)
             if size is not None and total != size:
                 raise ValueError(f"Size mismatch for {url}: expected {size}, got {total}")
-            if sha1 and digest.hexdigest().lower() != sha1.lower():
+            if digest.hexdigest() != sha1:
                 raise ValueError(f"SHA-1 mismatch for {url}: expected {sha1}, got {digest.hexdigest()}")
             temporary.replace(destination)
             return destination
@@ -149,7 +161,8 @@ def _download_version(version_id, manifest_versions, root, visited, libraries, a
         return
     visited.add(version_id)
     entry = _metadata_entry(version_id, manifest_versions)
-    metadata_bytes = _read_url(entry["url"], entry.get("size"), entry.get("sha1"), MAX_METADATA_BYTES)
+    entry_sha1 = _require_sha1(entry.get("sha1"), f"version {version_id} metadata")
+    metadata_bytes = _read_url(entry["url"], entry.get("size"), entry_sha1, MAX_METADATA_BYTES)
     metadata = json.loads(metadata_bytes)
     if not isinstance(metadata, dict) or metadata.get("id") != version_id:
         raise ValueError(f"Mojang metadata ID mismatch for {version_id}")
@@ -160,7 +173,7 @@ def _download_version(version_id, manifest_versions, root, visited, libraries, a
 
     client = metadata.get("downloads", {}).get("client") if isinstance(metadata.get("downloads"), dict) else None
     if client:
-        _write_verified(root, f"versions/{version_id}/{version_id}.jar", client["url"], client.get("size"), client.get("sha1"))
+        _write_verified(root, f"versions/{version_id}/{version_id}.jar", client["url"], client.get("size"), _require_sha1(client.get("sha1"), f"{version_id} client JAR"))
     elif not metadata.get("inheritsFrom"):
         raise ValueError(f"Mojang metadata for {version_id} has no client download")
 
@@ -170,7 +183,8 @@ def _download_version(version_id, manifest_versions, root, visited, libraries, a
         if not isinstance(index_id, str) or not re.fullmatch(r"[A-Za-z0-9._-]+", index_id):
             raise ValueError(f"Invalid asset index ID in {version_id}")
         index_path = f"assets/indexes/{index_id}.json"
-        index_bytes = _read_url(asset_index["url"], asset_index.get("size"), asset_index.get("sha1"), MAX_METADATA_BYTES)
+        index_sha1 = _require_sha1(asset_index.get("sha1"), f"asset index {index_id}")
+        index_bytes = _read_url(asset_index["url"], asset_index.get("size"), index_sha1, MAX_METADATA_BYTES)
         (root / index_path).parent.mkdir(parents=True, exist_ok=True)
         (root / index_path).write_bytes(index_bytes)
         index = json.loads(index_bytes)
