@@ -1,3 +1,5 @@
+import hashlib
+import json
 import os
 import struct
 import tempfile
@@ -17,7 +19,21 @@ class NativeArtifactVerificationTests(unittest.TestCase):
         )
         mod_dir = inputs / "input" / "mods-latest"
         mod_dir.mkdir(parents=True)
-        mod_dir.joinpath("sample-1.0.0.hnmod").write_bytes(b"test bundle")
+        mod_bytes = b"test bundle"
+        mod_dir.joinpath("sample-1.0.0.hnmod").write_bytes(mod_bytes)
+        inputs.joinpath("build-report", "registry-mods.json").write_text(
+            json.dumps({
+                "schema": 1,
+                "horizon_commit": commit,
+                "selected": [{
+                    "file": "sample-1.0.0.hnmod",
+                    "size": len(mod_bytes),
+                    "sha256": hashlib.sha256(mod_bytes).hexdigest(),
+                }],
+                "skipped": [],
+            }),
+            encoding="utf-8",
+        )
         linux = root / "linux"
         windows = root / "windows"
         for base, target, client in (
@@ -129,8 +145,8 @@ class NativeArtifactVerificationTests(unittest.TestCase):
                 nonlocal fdopen_calls
                 fdopen_calls += 1
                 stream = original_fdopen(descriptor, mode, *args, **kwargs)
-                # verify_artifacts opens the pinned commit, Linux report, then Linux binary.
-                if fdopen_calls == 3 and mode == "rb":
+                # pinned commit, registry report, mod, Linux report, then Linux binary.
+                if fdopen_calls == 5 and mode == "rb":
                     return MutatingStream(stream)
                 return stream
 
@@ -188,7 +204,7 @@ class NativeArtifactVerificationTests(unittest.TestCase):
                 fdopen_calls += 1
                 stream = real_fdopen(descriptor, *args, **kwargs)
                 # On Windows the reparse-point handle may be opened, but it must never be read.
-                if fdopen_calls == 2:
+                if fdopen_calls == 4:
                     return TrackReportRead(stream)
                 return stream
 
@@ -315,6 +331,42 @@ class NativeArtifactVerificationTests(unittest.TestCase):
             result = verify_artifacts(inputs, linux, windows)
             self.assertEqual(result["status"], "VERIFIED")
 
+
+    def test_verifies_explicit_core_only_build(self):
+        with tempfile.TemporaryDirectory() as temp:
+            inputs, linux, windows = self._fixture(Path(temp))
+            mod_dir = inputs / "input" / "mods-latest"
+            for mod in mod_dir.glob("*.hnmod"):
+                mod.unlink()
+            report_path = inputs / "build-report" / "registry-mods.json"
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            report["selected"] = []
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            for root, target in ((linux, "linux-x86_64"), (windows, "windows-x86_64")):
+                path = root / "build-report" / target / "build.txt"
+                text = path.read_text(encoding="utf-8")
+                text = text.replace("Optional native mods: built", "Optional native mods: core-only")
+                text = text.replace("Build mode: core+native-mods", "Build mode: core-only")
+                path.write_text(text, encoding="utf-8")
+            result = verify_artifacts(inputs, linux, windows)
+            self.assertEqual(result["status"], "VERIFIED")
+
+    def test_rejects_mod_changed_after_registry_verification(self):
+        with tempfile.TemporaryDirectory() as temp:
+            inputs, linux, windows = self._fixture(Path(temp))
+            mod = inputs / "input" / "mods-latest" / "sample-1.0.0.hnmod"
+            raw = bytearray(mod.read_bytes())
+            raw[0] ^= 1
+            mod.write_bytes(raw)
+            with self.assertRaisesRegex(ValueError, "no longer match the registry-verified digest"):
+                verify_artifacts(inputs, linux, windows)
+
+    def test_rejects_mod_absent_from_registry_selection(self):
+        with tempfile.TemporaryDirectory() as temp:
+            inputs, linux, windows = self._fixture(Path(temp))
+            (inputs / "input" / "mods-latest" / "extra.hnmod").write_bytes(b"extra")
+            with self.assertRaisesRegex(ValueError, "do not match the registry selection"):
+                verify_artifacts(inputs, linux, windows)
 
 if __name__ == "__main__":
     unittest.main()
