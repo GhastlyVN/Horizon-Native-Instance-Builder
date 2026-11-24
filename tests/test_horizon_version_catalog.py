@@ -37,6 +37,12 @@ class HorizonVersionCatalogTests(unittest.TestCase):
         self.assertEqual([x["tag"] for x in result["versions"]], ["nightly", "nightly-2026-11-08"])
         self.assertEqual(result["versions"][0]["install_tag"], "nightly-2026-11-13-aaaaaaa")
 
+    def test_skips_releases_with_non_string_tag(self):
+        malformed = release("nightly", "b" * 40)
+        malformed["tag_name"] = None
+        result = build_catalog([malformed, release("nightly", "a" * 40)], 20)
+        self.assertEqual([x["tag"] for x in result["versions"]], ["nightly"])
+
     def test_refuses_release_without_full_source_commit(self):
         with self.assertRaisesRegex(ValueError, "immutable source commit"):
             build_catalog([release("nightly", "not-a-sha")], 20)
