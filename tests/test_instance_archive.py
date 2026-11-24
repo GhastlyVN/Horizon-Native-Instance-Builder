@@ -1026,8 +1026,14 @@ class InstanceArchiveTests(unittest.TestCase):
                 ):
                     game_root = extract_safe(archive, destination)
 
-            self.assertEqual((game_root / "options.txt").read_text(encoding="utf-8"), "safe")
-            self.assertEqual((destination / "game" / "options.txt").read_text(encoding="utf-8"), "safe")
+            self.assertEqual(
+                (game_root / "options.txt").read_text(encoding="utf-8"),
+                "safe",
+            )
+            self.assertEqual(
+                (destination / "game" / "options.txt").read_text(encoding="utf-8"),
+                "safe",
+            )
 
 
 

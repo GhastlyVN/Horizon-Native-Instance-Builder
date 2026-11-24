@@ -10,9 +10,19 @@ import unicodedata
 import zipfile
 
 try:
-    from scripts.prepare import MAX_ARCHIVE_BYTES, open_regular_zip_source, preflight_zip_stream, validate_zip_archive
+    from scripts.prepare import (
+        MAX_ARCHIVE_BYTES,
+        open_regular_zip_source,
+        preflight_zip_stream,
+        validate_zip_archive,
+    )
 except ModuleNotFoundError:  # direct execution: python scripts/extract_instance.py
-    from prepare import MAX_ARCHIVE_BYTES, open_regular_zip_source, preflight_zip_stream, validate_zip_archive
+    from prepare import (
+        MAX_ARCHIVE_BYTES,
+        open_regular_zip_source,
+        preflight_zip_stream,
+        validate_zip_archive,
+    )
 
 MAX_ARCHIVE_ENTRIES = 100_000
 MAX_MEMBER_UNCOMPRESSED_BYTES = 2 * 1024**3
