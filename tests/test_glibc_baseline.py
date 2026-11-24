@@ -85,6 +85,21 @@ class GlibcBaselineTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "not an ELF executable"):
                 verify_binary(binary, "2.35", readelf=_fake_readelf)
 
+    def test_main_publishes_report_through_safe_writer(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "report.json"
+            with patch.object(
+                verify_glibc_baseline, "verify_binary", return_value={"required_max": (2, 35)}
+            ), patch.object(
+                verify_glibc_baseline, "write_report_atomically"
+            ) as writer, patch(
+                "sys.argv",
+                ["verify_glibc_baseline", "--binary", str(Path(temp) / "client"), "--output", str(output)],
+            ):
+                verify_glibc_baseline.main()
+            writer.assert_called_once()
+            self.assertEqual(writer.call_args[0][0], output)
+
 
 def _fake_readelf(*args, **kwargs):
     class Completed:
@@ -126,21 +141,6 @@ def _fake_readelf(*args, **kwargs):
             with self.assertRaisesRegex(ValueError, "SHA-256 does not match"):
                 verify_binary(binary, "2.35", readelf=_fake_readelf,
                               expected_sha256="0" * 64)
-
-    def test_main_publishes_report_through_safe_writer(self):
-        with tempfile.TemporaryDirectory() as temp:
-            output = Path(temp) / "report.json"
-            with patch.object(
-                verify_glibc_baseline, "verify_binary", return_value={"required_max": (2, 35)}
-            ), patch.object(
-                verify_glibc_baseline, "write_report_atomically"
-            ) as writer, patch(
-                "sys.argv",
-                ["verify_glibc_baseline", "--binary", str(Path(temp) / "client"), "--output", str(output)],
-            ):
-                verify_glibc_baseline.main()
-            writer.assert_called_once()
-            self.assertEqual(writer.call_args[0][0], output)
 
 if __name__ == "__main__":
     unittest.main()
