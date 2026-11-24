@@ -89,7 +89,7 @@ class GlibcBaselineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             output = Path(temp) / "report.json"
             with patch.object(
-                verify_glibc_baseline, "verify_binary", return_value={"required_max": (2, 35)}
+                verify_glibc_baseline, "verify_binary", return_value={"required_max": (2, 35), "baseline": (2, 35)}
             ), patch.object(
                 verify_glibc_baseline, "write_report_atomically"
             ) as writer, patch(
