@@ -368,5 +368,28 @@ class NativeArtifactVerificationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "do not match the registry selection"):
                 verify_artifacts(inputs, linux, windows)
 
+    def test_write_report_atomically_refuses_linked_output(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            output = root / "report.json"
+            victim = root / "victim.json"
+            victim.write_text("{}", encoding="utf-8")
+            try:
+                output.symlink_to(victim)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"symlink creation unavailable: {error}")
+
+            with self.assertRaisesRegex(ValueError, "symlink or reparse point"):
+                verify_native_artifacts.write_report_atomically(output, "{}\n")
+            self.assertEqual(victim.read_text(encoding="utf-8"), "{}")
+
+    def test_write_report_atomically_replaces_existing_report(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "report.json"
+            output.write_text("old", encoding="utf-8")
+
+            verify_native_artifacts.write_report_atomically(output, "new\n")
+            self.assertEqual(output.read_text(encoding="utf-8"), "new\n")
+
 if __name__ == "__main__":
     unittest.main()
