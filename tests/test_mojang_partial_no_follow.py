@@ -17,7 +17,7 @@ class MojangPartialFileTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "non-regular"):
                 download_minecraft._write_verified(
-                    root, "client.jar", "https://launcher.mojang.com/client.jar"
+                    root, "client.jar", "https://launcher.mojang.com/client.jar", sha1="0" * 40
                 )
 
             self.assertEqual(victim.read_bytes(), b"do not overwrite")

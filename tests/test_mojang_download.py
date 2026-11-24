@@ -72,7 +72,7 @@ class MojangDownloadTests(unittest.TestCase):
         metadata = {
             "id": "1.21.1",
             "downloads": {"client": {"url": "https://launcher.mojang.com/client.jar", "size": len(client), "sha1": client_sha}},
-            "assetIndex": {"id": "1.21", "url": "https://piston-meta.mojang.com/index.json", "size": 1, "sha1": "index-sha"},
+            "assetIndex": {"id": "1.21", "url": "https://piston-meta.mojang.com/index.json", "size": 1, "sha1": hashlib.sha1(b"index").hexdigest()},
             "libraries": [{"downloads": {"artifact": {
                 "path": "org/example/sample/1.0/sample-1.0.jar",
                 "url": "https://libraries.minecraft.net/org/example/sample/1.0/sample-1.0.jar",
@@ -81,7 +81,7 @@ class MojangDownloadTests(unittest.TestCase):
         }
         manifest = {
             "latest": {"release": "1.21.1", "snapshot": "snapshot"},
-            "versions": [{"id": "1.21.1", "url": "https://piston-meta.mojang.com/version.json", "size": 2, "sha1": "meta-sha"}],
+            "versions": [{"id": "1.21.1", "url": "https://piston-meta.mojang.com/version.json", "size": 2, "sha1": hashlib.sha1(b"meta").hexdigest()}],
         }
         payloads = {
             download_minecraft.MANIFEST_URL: json.dumps(manifest).encode(),
@@ -121,7 +121,7 @@ class MojangDownloadTests(unittest.TestCase):
         client = b"client"
         client_sha = hashlib.sha1(client).hexdigest()
         metadata_bytes = b'{ "id": "1.21.1", "downloads": {"client": {"url": "https://launcher.mojang.com/client.jar", "size": 6, "sha1": "' + client_sha.encode() + b'"}} }'
-        manifest = {"latest": {"release": "1.21.1", "snapshot": "1.21.1"}, "versions": [{"id": "1.21.1", "url": "https://piston-meta.mojang.com/version.json"}]}
+        manifest = {"latest": {"release": "1.21.1", "snapshot": "1.21.1"}, "versions": [{"id": "1.21.1", "url": "https://piston-meta.mojang.com/version.json", "sha1": hashlib.sha1(b"meta").hexdigest()}]}
         payloads = {download_minecraft.MANIFEST_URL: json.dumps(manifest).encode(), "https://piston-meta.mojang.com/version.json": metadata_bytes}
         def fake_read(url, *args, **kwargs): return payloads[url]
         def fake_write(root, relative, url, size=None, sha1=None):
@@ -137,7 +137,7 @@ class MojangDownloadTests(unittest.TestCase):
                 self.assertEqual(archive.read("versions/1.21.1/1.21.1.json"), metadata_bytes)
 
     def test_expected_horizon_version_is_checked_before_game_download(self):
-        manifest = {"latest": {"release": "1.21.1", "snapshot": "1.21.1"}, "versions": [{"id": "1.21.1", "url": "https://piston-meta.mojang.com/version.json"}]}
+        manifest = {"latest": {"release": "1.21.1", "snapshot": "1.21.1"}, "versions": [{"id": "1.21.1", "url": "https://piston-meta.mojang.com/version.json", "sha1": hashlib.sha1(b"meta").hexdigest()}]}
         with patch.object(download_minecraft, "_read_url", return_value=json.dumps(manifest).encode()), patch.object(download_minecraft, "_download_version") as download:
             with self.assertRaisesRegex(ValueError, "requires Minecraft 26.3"):
                 download_minecraft.download_game("latest-release", "unused.zip", expected_version="26.3")
@@ -162,7 +162,7 @@ class MojangDownloadTests(unittest.TestCase):
                 "id": "1.21.1",
                 "url": "https://piston-meta.mojang.com/version.json",
                 "size": 1,
-                "sha1": "meta-sha",
+                "sha1": hashlib.sha1(b"meta").hexdigest(),
             }],
         }
         payloads = {
@@ -224,6 +224,47 @@ class MojangDownloadTests(unittest.TestCase):
             self.assertEqual(result.read_bytes(), payload)
             self.assertEqual(opened.call_count, 2)
             self.assertFalse(result.with_name(result.name + ".part").exists())
+
+    def test_missing_metadata_digest_fails_closed_before_any_download(self):
+        versions = [{
+            "id": "1.21.1",
+            "url": "https://piston-meta.mojang.com/version.json",
+            "size": 2,
+        }]
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            with patch.object(download_minecraft, "_read_url") as read_url:
+                with self.assertRaisesRegex(ValueError, "Missing or invalid Mojang SHA-1"):
+                    download_minecraft._download_version(
+                        "1.21.1", versions, root, set(), [], {}
+                    )
+            read_url.assert_not_called()
+            self.assertFalse((root / "versions").exists())
+
+    def test_missing_client_or_index_digest_is_rejected(self):
+        versions = [{
+            "id": "1.21.1",
+            "url": "https://piston-meta.mojang.com/version.json",
+            "sha1": hashlib.sha1(b"meta").hexdigest(),
+        }]
+        metadata = {
+            "id": "1.21.1",
+            "downloads": {"client": {"url": "https://launcher.mojang.com/client.jar", "size": 4}},
+            "assetIndex": {"id": "1.21", "url": "https://piston-meta.mojang.com/index.json", "sha1": "bad"},
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            with patch.object(download_minecraft, "_read_url", return_value=json.dumps(metadata).encode()), patch.object(download_minecraft, "_write_verified") as write_verified:
+                with self.assertRaisesRegex(ValueError, "Missing or invalid Mojang SHA-1"):
+                    download_minecraft._download_version("1.21.1", versions, root, set(), [], {})
+            write_verified.assert_not_called()
+
+    def test_write_verified_requires_a_pinned_digest(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaisesRegex(ValueError, "Missing or invalid Mojang SHA-1"):
+                download_minecraft._write_verified(
+                    pathlib.Path(temp), "test.jar", "https://launcher.mojang.com/client.jar"
+                )
 
 if __name__ == "__main__":
     unittest.main()
