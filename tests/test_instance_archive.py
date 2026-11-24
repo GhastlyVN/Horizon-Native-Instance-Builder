@@ -703,6 +703,39 @@ class InstanceArchiveTests(unittest.TestCase):
                 extract_safe(archive, destination)
             self.assertFalse((destination / "real" / "payload.txt").exists())
 
+    @unittest.skipUnless(
+        os.name == "posix" and hasattr(os, "O_NOFOLLOW"),
+        "descriptor-relative extraction needs POSIX O_NOFOLLOW",
+    )
+    def test_parent_swapped_after_check_cannot_redirect_write(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            archive = root / "race.zip"
+            destination = root / "out"
+            outside = root / "outside"
+            outside.mkdir()
+            destination.mkdir()
+            (destination / "game").mkdir()
+            with zipfile.ZipFile(archive, "w") as zf:
+                zf.writestr("game/versions/26.3/26.3.json", "{}")
+                zf.writestr("game/payload.txt", b"must stay inside")
+            swapped = [False]
+            original = extract_instance._is_link_or_reparse_point
+
+            def swap_after_check(path):
+                if path.name == "game" and not swapped[0]:
+                    swapped[0] = True
+                    path.rmdir()
+                    path.symlink_to(outside, target_is_directory=True)
+                    return False
+                return original(path)
+
+            with patch.object(extract_instance, "_is_link_or_reparse_point", swap_after_check):
+                with self.assertRaises(SystemExit):
+                    extract_safe(archive, destination)
+            self.assertTrue(swapped[0])
+            self.assertFalse((outside / "payload.txt").exists())
+
     def test_extractor_refuses_encrypted_entries(self):
         with tempfile.TemporaryDirectory() as temp:
             root = pathlib.Path(temp)
