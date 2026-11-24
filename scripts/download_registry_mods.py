@@ -111,9 +111,13 @@ def choose_versions(index: dict, health: dict, health_updated_at: str,
 
     projects = {p.get("id"): p for p in index.get("projects", []) if isinstance(p, dict)}
     revoked = index.get("revoked", [])
-    revoked_ids = {r.get("id") for r in revoked if isinstance(r, dict) and not r.get("sha256")}
-    revoked_hashes = {r.get("sha256") for r in revoked if isinstance(r, dict) and r.get("sha256")}
+    if not isinstance(revoked, list) or not all(isinstance(r, dict) for r in revoked):
+        raise ValueError("Registry revocations must be a list of objects.")
+    revoked_ids = {r.get("id") for r in revoked if not r.get("sha256")}
+    revoked_hashes = {r.get("sha256") for r in revoked if r.get("sha256")}
     broken = health.get("broken", {})
+    if not isinstance(broken, dict):
+        raise ValueError("Native-health broken map must be an object.")
     selected: list[dict] = []
     skipped: list[dict] = []
 
@@ -151,7 +155,7 @@ def choose_versions(index: dict, health: dict, health_updated_at: str,
             skipped.append({"id": mod_id, "version": version.get("version"), "reason": "file revoked"})
             continue
 
-        failure = broken.get(mod_id) if isinstance(broken, dict) else None
+        failure = broken.get(mod_id)
         if failure:
             if failure.get("version") != version.get("version"):
                 raise ValueError(

@@ -100,6 +100,44 @@ class RegistryModSelectionTests(unittest.TestCase):
                 "1" * 40,
             )
 
+    def test_refuses_malformed_revocations(self):
+        index = self.make_index()
+        index["revoked"] = {"sample": {"reason": "unsafe"}}
+        with self.assertRaisesRegex(ValueError, "revocations must be a list"):
+            choose_versions(
+                index,
+                {"horizon": "1" * 40, "broken": {}},
+                "2026-11-14T00:09:00Z",
+                ("sample",),
+                "26.3",
+                "1" * 40,
+            )
+
+    def test_skips_revoked_project(self):
+        index = self.make_index()
+        index["revoked"] = [{"id": "sample"}]
+        selected, skipped = choose_versions(
+            index,
+            {"horizon": "1" * 40, "broken": {}},
+            "2026-11-14T00:09:00Z",
+            ("sample",),
+            "26.3",
+            "1" * 40,
+        )
+        self.assertEqual(selected, [])
+        self.assertIn("revoked", skipped[0]["reason"])
+
+    def test_refuses_malformed_broken_map(self):
+        with self.assertRaisesRegex(ValueError, "broken map must be an object"):
+            choose_versions(
+                self.make_index(),
+                {"horizon": "1" * 40, "broken": ["sample"]},
+                "2026-11-14T00:09:00Z",
+                ("sample",),
+                "26.3",
+                "1" * 40,
+            )
+
     def test_bundle_rejects_windows_reserved_paths(self):
         data, expected = self.make_bundle((("CON.txt", b"reserved"),))
         with self.assertRaisesRegex(ValueError, "Unsafe ZIP path"):
