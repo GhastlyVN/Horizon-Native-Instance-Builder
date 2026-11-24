@@ -8,6 +8,8 @@ reuse the workflow's ``GITHUB_TOKEN`` when present and retry transient statuses.
 """
 from __future__ import annotations
 
+import datetime
+import email.utils
 import os
 import time
 import urllib.error
@@ -42,8 +44,18 @@ def build_headers(url: str, accept: str = "application/vnd.github+json") -> dict
 def retry_delay(error: Exception, attempt: int) -> float:
     headers = getattr(error, "headers", None)
     retry_after = headers.get("Retry-After") if headers is not None else None
-    if isinstance(retry_after, str) and retry_after.isdigit():
-        return min(float(retry_after), 60.0)
+    if isinstance(retry_after, str):
+        if retry_after.strip().isdigit():
+            return min(float(retry_after), 60.0)
+        try:
+            when = email.utils.parsedate_to_datetime(retry_after)
+        except (TypeError, ValueError):
+            when = None
+        if when is not None:
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=datetime.timezone.utc)
+            remaining = (when - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+            return min(max(remaining, 0.0), 60.0)
     return min(2.0**attempt, 30.0)
 
 
