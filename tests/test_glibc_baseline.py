@@ -1,3 +1,4 @@
+import os
 import struct
 import tempfile
 import unittest
@@ -88,6 +89,26 @@ def _fake_readelf(*args, **kwargs):
 
     return Completed()
 
+
+    def test_readelf_uses_verified_descriptor_and_detects_swap(self):
+        with tempfile.TemporaryDirectory() as temp:
+            binary = Path(temp) / "horizon-client"
+            binary.write_bytes(b"\x7fELF" + b"\x00" * 60)
+            commands = []
+
+            class Completed:
+                stdout = SAMPLE_READELF
+
+            def swapping_readelf(command):
+                commands.append(command)
+                binary.write_bytes(b"\x7fELF" + b"X" * 60)
+                os.utime(binary, (1, 1))
+                return Completed()
+
+            with self.assertRaisesRegex(ValueError, "changed during GLIBC verification"):
+                verify_binary(binary, "2.35", readelf=swapping_readelf)
+            self.assertTrue(commands)
+            self.assertTrue(commands[0][-1].startswith("/proc/self/fd/"))
 
 if __name__ == "__main__":
     unittest.main()
