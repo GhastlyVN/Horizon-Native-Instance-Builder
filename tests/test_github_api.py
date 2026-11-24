@@ -9,7 +9,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from scripts import resolve_horizon_revision as resolve
-from scripts.github_api import build_headers, open_url, retry_delay, token
+from scripts.github_api import build_headers, open_url, read_json_limited, retry_delay, token
 
 
 class FakeResponse:
@@ -206,5 +206,28 @@ class GithubApiTests(unittest.TestCase):
             fetch.assert_not_called()
 
 
+    def test_read_json_limited_caps_the_response_before_parsing(self):
+        response = FakeResponse(b'{"a": "' + b"x" * 100 + b'"}')
+        with self.assertRaisesRegex(ValueError, "exceeds the 10-byte safety limit"):
+            read_json_limited(
+                "https://api.github.com/repos/x/y/releases",
+                max_bytes=10,
+                opener=lambda _url: response,
+            )
+
+    def test_read_json_limited_rejects_foreign_redirects(self):
+        class Redirected(FakeResponse):
+            def geturl(self):
+                return "https://evil.example/releases"
+
+        with self.assertRaisesRegex(ValueError, "non-GitHub host"):
+            read_json_limited(
+                "https://api.github.com/repos/x/y/releases",
+                opener=lambda _url: Redirected(b"{}"),
+            )
+
+    def test_read_json_limited_requires_an_approved_url(self):
+        with self.assertRaisesRegex(ValueError, "non-GitHub API JSON URL"):
+            read_json_limited("http://evil.example/releases", opener=lambda _url: None)
 if __name__ == "__main__":
     unittest.main()

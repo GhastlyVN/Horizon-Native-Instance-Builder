@@ -12,9 +12,9 @@ import urllib.parse
 from pathlib import Path
 
 try:
-    from scripts.github_api import open_url
+    from scripts.github_api import open_url, read_json_limited
 except ModuleNotFoundError:  # direct execution: python scripts/resolve_horizon_revision.py
-    from github_api import open_url
+    from github_api import open_url, read_json_limited
 
 UPSTREAM_REPOSITORY = "horizon-rust/horizon"
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -31,8 +31,9 @@ def release_api(repository: str) -> str:
 def fetch_release(ref: str = "nightly", repository: str = UPSTREAM_REPOSITORY) -> dict:
     if not REF.fullmatch(ref):
         raise ValueError("Horizon ref must be 'nightly'/'elyby-nightly' or a dated -YYYY-MM-DD tag.")
-    with open_url(release_api(repository) + urllib.parse.quote(ref, safe="")) as response:
-        value = json.loads(response.read())
+    value = read_json_limited(
+        release_api(repository) + urllib.parse.quote(ref, safe=""), opener=open_url
+    )
     if value.get("tag_name") != ref or not value.get("prerelease"):
         raise ValueError(f"GitHub did not return the requested Horizon Nightly release: {ref}.")
     commit = value.get("target_commitish", "")
