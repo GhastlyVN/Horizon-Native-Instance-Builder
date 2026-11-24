@@ -1,12 +1,15 @@
 import hashlib
 import io
 import json
+import pathlib
+import tempfile
 import struct
 import unittest
 from unittest.mock import patch
 import zipfile
 from unittest.mock import patch
 
+from scripts import download_registry_mods
 from scripts.download_registry_mods import (
     APPROVED_DOWNLOAD_HOSTS, choose_versions, fetch_bytes, validate_bundle
 )
@@ -205,6 +208,30 @@ class RegistryModSelectionTests(unittest.TestCase):
             validate_bundle(data, expected)
 
 
+    def test_report_is_published_through_safe_writer(self):
+        data, expected = self.make_bundle()
+        item = dict(
+            expected,
+            url="https://cdn.example/sample.hnmod",
+            file="sample.hnmod",
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            report = root / "registry-mods.json"
+            with patch.object(download_registry_mods, "fetch_json", side_effect=[{}, {}, {"updated_at": "2026-11-08"}]), patch.object(
+                download_registry_mods, "choose_versions", return_value=([item], [])
+            ), patch.object(
+                download_registry_mods, "fetch_bytes", return_value=data
+            ), patch.object(
+                download_registry_mods, "write_report_atomically",
+                side_effect=ValueError("refused"),
+            ) as writer:
+                with self.assertRaisesRegex(ValueError, "refused"):
+                    download_registry_mods.download_registry_mods(
+                        root / "mods", report, ("sample",), "26.3", "a" * 40
+                    )
+            writer.assert_called_once()
+            self.assertEqual(writer.call_args[0][0], report)
 if __name__ == "__main__":
     unittest.main()
 

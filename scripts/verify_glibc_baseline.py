@@ -18,6 +18,11 @@ import stat
 import subprocess
 from pathlib import Path
 
+try:
+    from scripts.verify_native_artifacts import write_report_atomically
+except ModuleNotFoundError:  # direct execution: python scripts/<name>.py
+    from verify_native_artifacts import write_report_atomically
+
 DEFAULT_BASELINE = "2.35"
 ELF_MAGIC = b"\x7fELF"
 _VERSION_RE = re.compile(r"GLIBC_(\d+)\.(\d+)(?:\.(\d+))?")
@@ -188,10 +193,8 @@ def main() -> None:
     report = verify_binary(args.binary, args.max_glibc, args.readelf,
                            args.expected_sha256)
     if args.output is not None:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(
-            json.dumps(report, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
+        write_report_atomically(
+            args.output, json.dumps(report, indent=2, sort_keys=True) + "\n"
         )
     print(
         f"{args.binary.name} requires at most {report['required_max']}; "

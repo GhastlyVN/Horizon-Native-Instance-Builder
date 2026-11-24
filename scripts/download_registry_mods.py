@@ -20,6 +20,11 @@ except ModuleNotFoundError:  # direct execution: python scripts/download_registr
     from github_api import open_url
 
 try:
+    from scripts.verify_native_artifacts import write_report_atomically
+except ModuleNotFoundError:  # direct execution: python scripts/<name>.py
+    from verify_native_artifacts import write_report_atomically
+
+try:
     from scripts.prepare import preflight_zip_stream, validate_zip_archive
 except ModuleNotFoundError:  # direct execution: python scripts/download_registry_mods.py
     from prepare import preflight_zip_stream, validate_zip_archive
@@ -353,8 +358,7 @@ def download_registry_mods(output: pathlib.Path, report_path: pathlib.Path,
         "selected": downloaded,
         "skipped": skipped,
     }
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_report_atomically(report_path, json.dumps(result, indent=2, sort_keys=True) + "\n")
     print(json.dumps({
         "horizon_commit": horizon_commit,
         "selected": [{"id": item["id"], "version": item["version"]} for item in downloaded],
