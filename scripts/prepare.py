@@ -6,6 +6,7 @@ import json
 import os
 import pathlib
 import stat
+import tempfile
 import unicodedata
 import zipfile
 
@@ -260,12 +261,75 @@ def open_regular_zip_source(path):
         yield stream
 
 
+@contextlib.contextmanager
+def open_zip_snapshot(path):
+    """Yield (archive, byte_count, sha256_hex) over one immutable no-follow snapshot.
+
+    Validation, member reads and recorded digests must all describe these exact bytes.
+    """
+    path = pathlib.Path(path)
+    with contextlib.ExitStack() as stack:
+        try:
+            source = stack.enter_context(open_regular_zip_source(path))
+        except ValueError as error:
+            raise ValueError(f"{path}: invalid ZIP archive: {error}") from error
+
+        # A path-backed handle can be rewritten in place with the same size and mtime
+        # after preflight, so freeze the bounded bytes once and work only from them.
+        before = os.fstat(source.fileno())
+        identity = _file_identity(before)
+        snapshot = stack.enter_context(tempfile.TemporaryFile(mode="w+b"))
+        hasher = hashlib.sha256()
+        copied = 0
+        try:
+            source.seek(0)
+            while chunk := source.read(1024 * 1024):
+                copied += len(chunk)
+                if copied > MAX_ARCHIVE_BYTES:
+                    raise ValueError(
+                        f"ZIP archive exceeds the compressed size limit ({MAX_ARCHIVE_BYTES} bytes)"
+                    )
+                hasher.update(chunk)
+                snapshot.write(chunk)
+            snapshot.flush()
+            snapshot.seek(0)
+            after = os.fstat(source.fileno())
+            path_after = path.lstat()
+        except OSError as error:
+            raise ValueError(f"{path}: invalid ZIP archive: {error}") from error
+        if (
+            _file_identity(after) != identity
+            or _metadata_is_link_or_reparse_point(path_after)
+            or not stat.S_ISREG(path_after.st_mode)
+            or _file_identity(path_after) != identity
+        ):
+            raise ValueError(f"ZIP archive changed while snapshotting it: {path}")
+
+        try:
+            preflight_zip_stream(snapshot, path)
+            archive = zipfile.ZipFile(snapshot)
+        except (OSError, zipfile.BadZipFile, ValueError) as error:
+            raise ValueError(f"{path}: invalid ZIP archive: {error}") from error
+        with archive:
+            yield archive, copied, hasher.hexdigest()
+
+
+@contextlib.contextmanager
+def _open_snapshot_archive(path):
+    with open_zip_snapshot(path) as (archive, _bytes, _sha256):
+        yield archive
+
+
 def validate_minecraft_archive(path, names):
     """Validate real files and the asset-index references, not just directory names."""
-    path = pathlib.Path(path)
-    root = discover_minecraft_root(names)
-    prefix = "" if root == "." else root.rstrip("/") + "/"
-    with open_regular_zip_source(path) as stream, open_preflighted_zip(stream, path) as archive:
+    archive_context = (
+        contextlib.nullcontext(path)
+        if isinstance(path, _ZIP_FILE_TYPE)
+        else _open_snapshot_archive(path)
+    )
+    with archive_context as archive:
+        root = discover_minecraft_root(names)
+        prefix = "" if root == "." else root.rstrip("/") + "/"
         entries = {
             info.filename.replace(chr(92), "/"): info
             for info in archive.infolist()
@@ -545,28 +609,30 @@ def main():
     mods_dir = pathlib.Path(args.mods)
     if not instance.is_file():
         raise SystemExit(f"Missing Horizon instance ZIP: {instance}")
-    count, _ = validate_zip(instance)
+    with open_zip_snapshot(instance) as (instance_zip, instance_bytes, instance_sha):
+        count, _ = validate_zip(instance_zip)
     mods = sorted(p for p in mods_dir.glob("*.hnmod") if p.is_file())
     if not mods:
         print(f"No .hnmod files found in {mods_dir}; validating a core-only Horizon build.")
     records = []
     for mod in mods:
-        _, mod_names = validate_zip(mod)
-        if not any(n.endswith("horizon-native.json") for n in mod_names):
-            raise SystemExit(f"{mod.name}: missing horizon-native.json")
-        if not any(n.endswith("horizon-mixin.toml") for n in mod_names):
-            raise SystemExit(f"{mod.name}: missing horizon-mixin.toml")
-        records.append({
-            "file": mod.name,
-            "bytes": mod.stat().st_size,
-            "sha256": digest(mod),
-        })
+        with open_zip_snapshot(mod) as (mod_zip, mod_bytes, mod_sha):
+            _, mod_names = validate_zip(mod_zip)
+            if not any(n.endswith("horizon-native.json") for n in mod_names):
+                raise SystemExit(f"{mod.name}: missing horizon-native.json")
+            if not any(n.endswith("horizon-mixin.toml") for n in mod_names):
+                raise SystemExit(f"{mod.name}: missing horizon-mixin.toml")
+            records.append({
+                "file": mod.name,
+                "bytes": mod_bytes,
+                "sha256": mod_sha,
+            })
     manifest = {
         "schema": 3,
         "instance": {
             "file": instance.name,
-            "bytes": instance.stat().st_size,
-            "sha256": digest(instance),
+            "bytes": instance_bytes,
+            "sha256": instance_sha,
             "zip_entries": count,
             "preserved_unchanged": True,
         },
@@ -576,21 +642,22 @@ def main():
         minecraft = pathlib.Path(args.minecraft)
         if not minecraft.is_file():
             raise SystemExit(f"Missing Minecraft game ZIP: {minecraft}")
-        try:
-            minecraft_count, minecraft_names = validate_zip(minecraft)
-            minecraft_root = validate_minecraft_archive(minecraft, minecraft_names)
-        except ValueError as error:
-            sample = chr(10).join(minecraft_names[:40]) if "minecraft_names" in locals() else ""
-            raise SystemExit(
-                f"{error}{chr(10)}First Minecraft ZIP entries:{chr(10)}{sample}"
-            )
-        manifest["minecraft"] = {
-            "file": minecraft.name,
-            "bytes": minecraft.stat().st_size,
-            "sha256": digest(minecraft),
-            "zip_entries": minecraft_count,
-            "minecraft_root": minecraft_root,
-        }
+        with open_zip_snapshot(minecraft) as (minecraft_zip, minecraft_bytes, minecraft_sha):
+            try:
+                minecraft_count, minecraft_names = validate_zip(minecraft_zip)
+                minecraft_root = validate_minecraft_archive(minecraft_zip, minecraft_names)
+            except ValueError as error:
+                sample = chr(10).join(minecraft_names[:40]) if "minecraft_names" in locals() else ""
+                raise SystemExit(
+                    f"{error}{chr(10)}First Minecraft ZIP entries:{chr(10)}{sample}"
+                )
+            manifest["minecraft"] = {
+                "file": minecraft.name,
+                "bytes": minecraft_bytes,
+                "sha256": minecraft_sha,
+                "zip_entries": minecraft_count,
+                "minecraft_root": minecraft_root,
+            }
     REPORT.mkdir(parents=True, exist_ok=True)
     (REPORT / "input-manifest.json").write_text(
         json.dumps(manifest, indent=2) + chr(10), encoding="utf-8"
