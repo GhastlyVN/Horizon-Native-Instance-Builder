@@ -455,7 +455,7 @@ def extract_safe(archive: pathlib.Path, destination: pathlib.Path) -> pathlib.Pa
             archive_files = [path.as_posix() for _, path, is_directory in validated_entries if not is_directory]
             game_root = find_minecraft_root(root, archive_files)
             if _file_identity(os.fstat(zf.fp.fileno())) != archive_identity:
-                raise SystemExit(f"ZIP archive changed during extraction: {archive}")
+                raise SystemExit(f"Validated ZIP snapshot changed during extraction: {archive}")
             return game_root
         except BaseException:
             # Extraction is exclusive: only remove files and directories created by this
