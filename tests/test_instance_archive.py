@@ -714,6 +714,8 @@ class InstanceArchiveTests(unittest.TestCase):
             destination = root / "out"
             outside = root / "outside"
             outside.mkdir()
+            destination.mkdir()
+            (destination / "game").mkdir()
             with zipfile.ZipFile(archive, "w") as zf:
                 zf.writestr("game/versions/26.3/26.3.json", "{}")
                 zf.writestr("game/payload.txt", b"must stay inside")
