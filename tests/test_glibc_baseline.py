@@ -1,3 +1,4 @@
+import hashlib
 import os
 import struct
 import tempfile
@@ -109,6 +110,20 @@ def _fake_readelf(*args, **kwargs):
                 verify_binary(binary, "2.35", readelf=swapping_readelf)
             self.assertTrue(commands)
             self.assertTrue(commands[0][-1].startswith("/proc/self/fd/"))
+
+    def test_verify_binary_binds_the_reported_digest(self):
+        with tempfile.TemporaryDirectory() as temp:
+            binary = Path(temp) / "horizon-client"
+            payload = b"\x7fELF" + b"\x00" * 60
+            binary.write_bytes(payload)
+            expected = hashlib.sha256(payload).hexdigest()
+
+            report = verify_binary(binary, "2.35", readelf=_fake_readelf,
+                                   expected_sha256=expected)
+            self.assertEqual(report["binary"], "horizon-client")
+            with self.assertRaisesRegex(ValueError, "SHA-256 does not match"):
+                verify_binary(binary, "2.35", readelf=_fake_readelf,
+                              expected_sha256="0" * 64)
 
 if __name__ == "__main__":
     unittest.main()
