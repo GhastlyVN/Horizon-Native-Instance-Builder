@@ -228,7 +228,8 @@ def _load_registry_selection(inputs: Path, pinned_commit: str) -> list[dict]:
     return selected
 
 
-def verify_artifacts(inputs: Path, linux: Path, windows: Path) -> dict:    pinned_path = inputs / "build-report" / "horizon-commit.txt"
+def verify_artifacts(inputs: Path, linux: Path, windows: Path) -> dict:
+    pinned_path = inputs / "build-report" / "horizon-commit.txt"
     try:
         pinned_commit = _read_regular_text(
             pinned_path, "ascii", 128, "validated Horizon commit"
