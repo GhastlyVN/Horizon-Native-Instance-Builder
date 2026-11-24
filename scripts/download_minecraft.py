@@ -212,6 +212,9 @@ def _library_downloads(library):
     parts = coordinate.split(":")
     if len(parts) not in (3, 4):
         raise ValueError(f"Unsupported legacy Mojang library coordinate: {library.get('name')}")
+    sha1 = library.get("sha1")
+    if not isinstance(sha1, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", sha1):
+        raise ValueError(f"Legacy Mojang library lacks a pinned SHA-1: {coordinate}")
     group, artifact, version = parts[:3]
     classifier = parts[3] if len(parts) == 4 else ""
     relative = "/".join(group.split(".")) + f"/{artifact}/{version}/{artifact}-{version}"
@@ -219,7 +222,11 @@ def _library_downloads(library):
         relative += f"-{classifier}"
     relative += f".{extension}"
     base = library.get("url") or "https://libraries.minecraft.net/"
-    yield {"path": relative, "url": urllib.parse.urljoin(base.rstrip("/") + "/", relative)}
+    yield {
+        "path": relative,
+        "url": urllib.parse.urljoin(base.rstrip("/") + "/", relative),
+        "sha1": sha1.lower(),
+    }
 
 
 def _download_asset(root, logical_name, record):
@@ -283,7 +290,10 @@ def download_game(version, output_zip, expected_version=None):
                     if previous is None:
                         unique_downloads[safe] = artifact
         for relative, artifact in unique_downloads.items():
-            _write_verified(root, f"libraries/{relative}", artifact["url"], artifact.get("size"), artifact.get("sha1"))
+            sha1 = artifact.get("sha1")
+            if not isinstance(sha1, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", sha1):
+                raise ValueError(f"Mojang library lacks a pinned SHA-1: {relative}")
+            _write_verified(root, f"libraries/{relative}", artifact["url"], artifact.get("size"), sha1)
 
         all_assets = {}
         for objects in asset_indexes.values():
