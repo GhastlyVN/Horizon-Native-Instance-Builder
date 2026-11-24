@@ -45,9 +45,17 @@ class MojangDownloadTests(unittest.TestCase):
                     "https://launcher.mojang.com/client.jar"
                 )
 
-    def test_legacy_maven_coordinate_uses_official_library_repository(self):
-        result = list(download_minecraft._library_downloads({"name": "org.example:sample:1.2.3"}))
+    def test_legacy_maven_coordinate_requires_a_pinned_sha1(self):
+        with self.assertRaisesRegex(ValueError, "lacks a pinned SHA-1"):
+            list(download_minecraft._library_downloads({"name": "org.example:sample:1.2.3"}))
+
+    def test_pinned_legacy_maven_coordinate_uses_official_library_repository(self):
+        digest = "a" * 40
+        result = list(download_minecraft._library_downloads({
+            "name": "org.example:sample:1.2.3", "sha1": digest,
+        }))
         self.assertEqual(result[0]["path"], "org/example/sample/1.2.3/sample-1.2.3.jar")
+        self.assertEqual(result[0]["sha1"], digest)
         self.assertEqual(
             result[0]["url"],
             "https://libraries.minecraft.net/org/example/sample/1.2.3/sample-1.2.3.jar",

@@ -8,6 +8,7 @@ import os
 import re
 import stat
 import struct
+import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -320,10 +321,46 @@ def verify_artifacts(inputs: Path, linux: Path, windows: Path) -> dict:
 
 def refuse_linked_output(path: Path) -> None:
     """Keep the verification report from being redirected or replaced by a link/directory."""
-    if path.is_symlink():
-        raise ValueError(f"Refusing to write through a symlink: {path}")
-    if path.exists() and not path.is_file():
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        raise ValueError(f"Refusing to inspect output path: {path}: {error}") from error
+    if _is_reparse_point(metadata):
+        raise ValueError(f"Refusing to write through a symlink or reparse point: {path}")
+    if not stat.S_ISREG(metadata.st_mode):
         raise ValueError(f"Refusing to write to a non-regular path: {path}")
+
+
+def write_report_atomically(path: Path, text: str) -> None:
+    """Publish the report by same-directory replace; never open the destination for writing."""
+    refuse_linked_output(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    descriptor_owned = True
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+            descriptor_owned = False
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+
+        # A link inserted while writing is refused. If one appears afterwards,
+        # os.replace replaces the link itself and never follows its target.
+        refuse_linked_output(path)
+        os.replace(temporary, path)
+    finally:
+        if descriptor_owned:
+            os.close(descriptor)
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -333,12 +370,9 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     result = verify_artifacts(args.inputs, args.linux, args.windows)
-    # shortcut: the check and write are separate calls; upgrade to O_NOFOLLOW if outputs can be shared.
-    refuse_linked_output(args.output)
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(
+    write_report_atomically(
+        args.output,
         json.dumps(result, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
     )
     print(
         f"Verified Linux and Windows native artifacts from Horizon "
