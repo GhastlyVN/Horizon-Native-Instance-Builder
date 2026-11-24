@@ -38,6 +38,7 @@ class MojangWriteVerifiedTests(unittest.TestCase):
                     pathlib.Path(folder),
                     "client.jar",
                     "https://launcher.mojang.com/client.jar",
+                    sha1="0" * 40,
                 )
             self.assertEqual(sorted(p.name for p in pathlib.Path(folder).iterdir()), [])
 
@@ -45,7 +46,7 @@ class MojangWriteVerifiedTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             with self.assertRaisesRegex(ValueError, "non-official"):
                 download_minecraft._write_verified(
-                    pathlib.Path(folder), "client.jar", "https://evil.example/client.jar"
+                    pathlib.Path(folder), "client.jar", "https://evil.example/client.jar", sha1="0" * 40
                 )
 
     def test_wrong_hash_does_not_publish_a_partial_file(self):
