@@ -81,6 +81,17 @@ class RegistryModSelectionTests(unittest.TestCase):
         self.assertEqual(selected, [])
         self.assertIn("E_TARGET_NOT_FOUND", skipped[0]["reason"])
 
+    def test_empty_broken_record_fails_closed(self):
+        with self.assertRaisesRegex(ValueError, "invalid native-health broken record"):
+            choose_versions(
+                self.make_index(),
+                {"horizon": "1" * 40, "broken": {"sample": {}}},
+                "2026-11-14T00:09:00Z",
+                ("sample",),
+                "26.3",
+                "1" * 40,
+            )
+
     def test_refuses_health_report_for_another_horizon_commit(self):
         with self.assertRaisesRegex(ValueError, "not the selected Nightly"):
             choose_versions(

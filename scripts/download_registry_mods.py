@@ -160,8 +160,10 @@ def choose_versions(index: dict, health: dict, health_updated_at: str,
             skipped.append({"id": mod_id, "version": version.get("version"), "reason": "file revoked"})
             continue
 
-        failure = broken.get(mod_id)
-        if failure:
+        if mod_id in broken:
+            failure = broken[mod_id]
+            if not isinstance(failure, dict) or not isinstance(failure.get("version"), str):
+                raise ValueError(f"{mod_id}: invalid native-health broken record.")
             if failure.get("version") != version.get("version"):
                 raise ValueError(
                     f"{mod_id}: health report checked version {failure.get('version')!r}, "
