@@ -40,6 +40,13 @@ def _no_follow_open(binary: Path):
         raise ValueError(f"{binary}: refusing symlink or reparse-point native client") from error
 
 
+def _file_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    identity = (metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns)
+    if os.name == "nt":
+        return identity
+    return (*identity, metadata.st_ctime_ns)
+
+
 def parse_version(text: str) -> tuple[int, ...]:
     """Parse a dotted GLIBC version such as ``2.35`` into a comparable tuple."""
     parts = text.strip().split(".")
@@ -91,7 +98,7 @@ def evaluate(readelf_output: str, baseline: str) -> dict:
 
 
 def read_versions(binary: Path, readelf: str = "readelf") -> str:
-    """Run ``readelf --version-info`` against ``binary`` and return its output."""
+    """Run ``readelf --version-info`` against one verified binary handle."""
     if not binary.is_file():
         raise ValueError(f"missing native client binary: {binary}")
     try:
@@ -101,25 +108,46 @@ def read_versions(binary: Path, readelf: str = "readelf") -> str:
     if _is_reparse_point(path_before):
         raise ValueError(f"{binary}: refusing symlink or reparse-point native client")
     with _no_follow_open(binary) as stream:
+        descriptor = stream.fileno()
+        opened = os.fstat(descriptor)
+        if _is_reparse_point(opened) or not stat.S_ISREG(opened.st_mode):
+            raise ValueError(f"{binary}: native client changed while it was being opened")
         if stream.read(4) != ELF_MAGIC:
             raise ValueError(f"{binary}: not an ELF executable")
-    command = [readelf, "--wide", "--version-info", str(binary)]
-    if callable(readelf):
-        # Test hook: the workflow always passes the real readelf binary name.
-        return readelf(command).stdout
-    try:
-        completed = subprocess.run(
-            command,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except FileNotFoundError as error:
-        raise ValueError(f"readelf is not available: {error}") from error
-    except subprocess.CalledProcessError as error:
-        detail = (error.stderr or "").strip() or f"exit {error.returncode}"
-        raise ValueError(f"readelf failed on {binary}: {detail}") from error
-    return completed.stdout
+        # Keep readelf on this descriptor: reopening the path would certify a swapped file.
+        command = [readelf, "--wide", "--version-info", f"/proc/self/fd/{descriptor}"]
+        if callable(readelf):
+            # Test hook: the workflow always passes the real readelf binary name.
+            output = readelf(command).stdout
+        else:
+            try:
+                completed = subprocess.run(
+                    command,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    pass_fds=(descriptor,),
+                )
+            except FileNotFoundError as error:
+                raise ValueError(f"readelf is not available: {error}") from error
+            except subprocess.CalledProcessError as error:
+                detail = (error.stderr or "").strip() or f"exit {error.returncode}"
+                raise ValueError(f"readelf failed on {binary}: {detail}") from error
+            output = completed.stdout
+        after = os.fstat(descriptor)
+        try:
+            path_after = binary.lstat()
+        except OSError as error:
+            raise ValueError(f"{binary}: native client changed during GLIBC verification") from error
+        if (
+            _file_identity(opened) != _file_identity(after)
+            or _file_identity(after) != _file_identity(path_after)
+            or _is_reparse_point(path_after)
+            or not stat.S_ISREG(path_after.st_mode)
+        ):
+            raise ValueError(f"{binary}: native client changed during GLIBC verification")
+        return output
+
 
 
 def verify_binary(binary: Path, baseline: str, readelf: str = "readelf") -> dict:
