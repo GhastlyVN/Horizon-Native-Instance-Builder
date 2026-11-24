@@ -162,7 +162,7 @@ class MojangDownloadTests(unittest.TestCase):
                 "id": "1.21.1",
                 "url": "https://piston-meta.mojang.com/version.json",
                 "size": 1,
-                "sha1": "meta-sha",
+                "sha1": hashlib.sha1(b"meta").hexdigest(),
             }],
         }
         payloads = {

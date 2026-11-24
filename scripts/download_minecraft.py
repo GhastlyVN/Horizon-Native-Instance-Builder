@@ -105,8 +105,6 @@ def _write_verified(root, relative, url, size=None, sha1=None):
     destination = root / _safe_relative_path(relative)
     destination.parent.mkdir(parents=True, exist_ok=True)
     _validate_url(url)
-    if expected_sha1 is not None:
-        expected_sha1 = _require_sha1(expected_sha1, url)
     last_error = None
     for attempt in range(3):
         temporary = destination.with_name(destination.name + ".part")
