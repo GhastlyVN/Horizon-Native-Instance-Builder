@@ -238,6 +238,25 @@ def verify_artifacts(inputs: Path, linux: Path, windows: Path) -> dict:    pinne
     if not _COMMIT_RE.fullmatch(pinned_commit):
         raise ValueError("validated Horizon commit must be a full 40-character SHA-1")
 
+    selection = _load_registry_selection(inputs, pinned_commit)
+    expected_mods = {item["file"]: item for item in selection}
+    if len(expected_mods) != len(selection):
+        raise ValueError("registry mod selection contains duplicate filenames")
+    mod_dir = inputs / "input" / "mods-latest"
+    actual_mods = sorted(
+        path.name for path in mod_dir.glob("*.hnmod") if _is_regular_non_link(path)
+    )
+    if set(actual_mods) != set(expected_mods):
+        raise ValueError(
+            "native mod inputs do not match the registry selection: "
+            f"expected {sorted(expected_mods)}, got {actual_mods}"
+        )
+    for name in actual_mods:
+        size, digest = _digest_regular_file(mod_dir / name, f"registry mod {name}")
+        expected = expected_mods[name]
+        if size != expected["size"] or digest != expected["sha256"]:
+            raise ValueError(f"{name}: bytes no longer match the registry-verified digest")
+
     targets = (
         ("linux-x86_64", linux, "horizon-client"),
         ("windows-x86_64", windows, "horizon-client.exe"),
@@ -248,31 +267,28 @@ def verify_artifacts(inputs: Path, linux: Path, windows: Path) -> dict:    pinne
         fields = _report(report_path)
         if fields.get("Target") != target:
             raise ValueError(f"{target}: build report target mismatch")
-        mod_inputs = [
-            path for path in (inputs / "input" / "mods-latest").glob("*.hnmod")
-            if _is_regular_non_link(path)
-        ]
-        if not mod_inputs:
-            raise ValueError("no registry-verified native mod packages were supplied")
+        expected_mode = "core-only" if not selection else "core+native-mods"
+        expected_optional = "core-only" if not selection else "built"
         if (
-            fields.get("Optional native mods") != "built"
-            or fields.get("Build mode") != "core+native-mods"
+            fields.get("Optional native mods") != expected_optional
+            or fields.get("Build mode") != expected_mode
         ):
             raise ValueError(
-                f"{target}: {len(mod_inputs)} .hnmod input(s) were supplied, "
-                "but the artifact is not confirmed as a native-mod build"
+                f"{target}: build fields disagree with the registry selection "
+                f"({expected_mode}); refusing to verify this artifact"
             )
         actual_commit = fields.get("Horizon commit", "").lower()
         if actual_commit != pinned_commit:
             raise ValueError(
                 f"{target}: Horizon commit mismatch; expected {pinned_commit}, got {actual_commit or '<missing>'}"
             )
-        native_version = fields.get("Native version", "")
-        if mod_inputs and not native_version.startswith(f"native-{pinned_commit[:7]}-"):
-            raise ValueError(
-                f"{target}: native build was not produced from the selected Nightly; "
-                f"expected native-{pinned_commit[:7]}..., got {native_version or '<missing>'}"
-            )
+        if selection:
+            native_version = fields.get("Native version", "")
+            if not native_version.startswith(f"native-{pinned_commit[:7]}-"):
+                raise ValueError(
+                    f"{target}: native build was not produced from the selected Nightly; "
+                    f"expected native-{pinned_commit[:7]}..., got {native_version or '<missing>'}"
+                )
         binary = root / "native-runtime" / client_name
         if not binary.is_file():
             raise ValueError(f"{target}: missing native client binary: {binary}")
