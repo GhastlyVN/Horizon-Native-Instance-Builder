@@ -13,6 +13,10 @@ import zipfile
 # Preserve the real class when tests replace ZipFile with a guard factory.
 _ZIP_FILE_TYPE = zipfile.ZipFile
 
+try:
+    from scripts.verify_native_artifacts import write_report_atomically
+except ModuleNotFoundError:  # direct execution: python scripts/<name>.py
+    from verify_native_artifacts import write_report_atomically
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_INSTANCE = ROOT / "input/instance/instance.zip"
 DEFAULT_MINECRAFT = ROOT / "input/minecraft/minecraft.zip"
@@ -599,6 +603,14 @@ def validate_zip(path):
     except zipfile.BadZipFile as error:
         raise ValueError(f"Not a ZIP archive: {path}") from error
 
+def write_input_manifest(manifest):
+    """Publish the input manifest by atomic same-directory replace."""
+    REPORT.mkdir(parents=True, exist_ok=True)
+    write_report_atomically(
+        REPORT / "input-manifest.json",
+        json.dumps(manifest, indent=2) + "\n",
+    )
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--instance", default=str(DEFAULT_INSTANCE))
@@ -658,10 +670,7 @@ def main():
                 "zip_entries": minecraft_count,
                 "minecraft_root": minecraft_root,
             }
-    REPORT.mkdir(parents=True, exist_ok=True)
-    (REPORT / "input-manifest.json").write_text(
-        json.dumps(manifest, indent=2) + chr(10), encoding="utf-8"
-    )
+    write_input_manifest(manifest)
     print(json.dumps(manifest, indent=2))
 
 
