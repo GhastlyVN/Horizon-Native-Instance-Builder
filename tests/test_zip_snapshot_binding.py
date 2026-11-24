@@ -79,7 +79,7 @@ class ZipSnapshotBindingTests(unittest.TestCase):
             root = pathlib.Path(temp)
             instance = root / "instance.zip"
             with zipfile.ZipFile(instance, "w") as archive:
-                archive.writestr("game/versions/1/1.json", "{}")
+                archive.writestr("game/versions/1/1.json", "AAAA")
             mods = root / "mods"
             mods.mkdir()
             self._write_bundle(mods / "sample.hnmod")
