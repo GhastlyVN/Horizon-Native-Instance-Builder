@@ -15,24 +15,20 @@ import zipfile
 
 try:
     from scripts.prepare import (
-        MAX_ARCHIVE_BYTES,
         MAX_ARCHIVE_ENTRIES,
         MAX_MEMBER_UNCOMPRESSED_BYTES,
         MAX_TOTAL_UNCOMPRESSED_BYTES,
         WINDOWS_RESERVED_NAMES,
-        open_regular_zip_source,
-        preflight_zip_stream,
+        open_zip_snapshot,
         validate_zip,
     )
 except ModuleNotFoundError:  # direct execution: python scripts/extract_native_mods.py
     from prepare import (
-        MAX_ARCHIVE_BYTES,
         MAX_ARCHIVE_ENTRIES,
         MAX_MEMBER_UNCOMPRESSED_BYTES,
         MAX_TOTAL_UNCOMPRESSED_BYTES,
         WINDOWS_RESERVED_NAMES,
-        open_regular_zip_source,
-        preflight_zip_stream,
+        open_zip_snapshot,
         validate_zip,
     )
 
@@ -61,13 +57,6 @@ def _is_link_or_reparse_point(path: pathlib.Path) -> bool:
     return _metadata_is_link_or_reparse_point(metadata)
 
 
-def _file_identity(metadata):
-    identity = (metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns)
-    if os.name != "nt":
-        return (*identity, metadata.st_ctime_ns)
-    return identity
-
-
 def _filesystem_collision_key(value: str) -> str:
     """Match names the same way on case-insensitive, Unicode-normalizing filesystems."""
     return unicodedata.normalize("NFC", value).casefold()
@@ -85,19 +74,9 @@ def _reject_duplicate_json_keys(pairs):
 
 @contextlib.contextmanager
 def _open_bounded_zip(archive_path: pathlib.Path):
-    """Use the shared no-follow source and ZIP preflight policy before extraction."""
-    with contextlib.ExitStack() as stack:
-        try:
-            stream = stack.enter_context(open_regular_zip_source(archive_path))
-        except ValueError as error:
-            raise ValueError(f"{archive_path}: invalid ZIP archive: {error}") from error
-        try:
-            preflight_zip_stream(stream, archive_path)
-            bundle = zipfile.ZipFile(stream)
-        except (OSError, zipfile.BadZipFile, ValueError) as error:
-            raise ValueError(f"{archive_path}: invalid ZIP archive: {error}") from error
-        with bundle:
-            yield bundle
+    """Use one immutable snapshot for preflight, validation and every member read."""
+    with open_zip_snapshot(archive_path) as (bundle, _size, _sha256):
+        yield bundle
 
 
 
