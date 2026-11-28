@@ -330,7 +330,7 @@ def _metadata_is_link_or_reparse_point(metadata) -> bool:
 
 
 def _promote_directory(staging: pathlib.Path, output: pathlib.Path) -> None:
-    """Atomically replace an output directory, restoring the previous tree on failure."""
+    """Promote staged output and restore the previous directory if promotion fails."""
     backup = None
     try:
         metadata = output.lstat()
