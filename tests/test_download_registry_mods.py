@@ -243,6 +243,136 @@ class RegistryModSelectionTests(unittest.TestCase):
                     )
             writer.assert_called_once()
             self.assertEqual(writer.call_args[0][0], report)
+
+    def test_registry_mod_directory_promotion_replaces_existing_output(self):
+        data, expected = self.make_bundle()
+        item = dict(expected, url="https://cdn.example/sample.hnmod", file="sample.hnmod")
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            output = root / "mods"
+            output.mkdir()
+            (output / "old.txt").write_text("keep until replacement", encoding="utf-8")
+            report = root / "registry-mods.json"
+            with patch.object(download_registry_mods, "fetch_json", side_effect=[{}, {}, {"updated_at": "2026-11-08"}]), patch.object(
+                download_registry_mods, "choose_versions", return_value=([item], [])
+            ), patch.object(download_registry_mods, "fetch_bytes", return_value=data):
+                result = download_registry_mods.download_registry_mods(
+                    output, report, ("sample",), "26.3", "a" * 40
+                )
+            self.assertTrue((output / "sample.hnmod").is_file())
+            self.assertFalse((output / "old.txt").exists())
+            self.assertEqual(result["selected"][0]["file"], "sample.hnmod")
+            self.assertTrue(report.is_file())
+
+    def test_failed_registry_mod_promotion_restores_previous_output(self):
+        data, expected = self.make_bundle()
+        item = dict(expected, url="https://cdn.example/sample.hnmod", file="sample.hnmod")
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            output = root / "mods"
+            output.mkdir()
+            sentinel = output / "old.txt"
+            sentinel.write_text("previous registry set", encoding="utf-8")
+            report = root / "registry-mods.json"
+            real_replace = download_registry_mods.os.replace
+            replace_calls = 0
+
+            def fail_new_directory(source, destination):
+                nonlocal replace_calls
+                replace_calls += 1
+                if replace_calls == 2:
+                    raise OSError("injected staging promotion failure")
+                return real_replace(source, destination)
+
+            with patch.object(download_registry_mods, "fetch_json", side_effect=[{}, {}, {"updated_at": "2026-11-08"}]), patch.object(
+                download_registry_mods, "choose_versions", return_value=([item], [])
+            ), patch.object(download_registry_mods, "fetch_bytes", return_value=data), patch.object(
+                download_registry_mods.os, "replace", side_effect=fail_new_directory
+            ):
+                with self.assertRaisesRegex(OSError, "injected staging promotion failure"):
+                    download_registry_mods.download_registry_mods(
+                        output, report, ("sample",), "26.3", "a" * 40
+                    )
+
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "previous registry set")
+            self.assertFalse((output / "sample.hnmod").exists())
+            self.assertEqual(
+                sorted(path.name for path in root.iterdir() if ".backup-" in path.name),
+                [],
+            )
+
+    def test_failed_registry_mod_promotion_reports_backup_when_rollback_fails(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            output = root / "mods"
+            output.mkdir()
+            (output / "old.txt").write_text("previous registry set", encoding="utf-8")
+            staging = root / "staging"
+            staging.mkdir()
+            (staging / "new.txt").write_text("new registry set", encoding="utf-8")
+
+            real_replace = download_registry_mods.os.replace
+            replace_calls = 0
+
+            def fail_promotion_and_rollback(source, destination):
+                nonlocal replace_calls
+                replace_calls += 1
+                if replace_calls == 2:
+                    raise OSError("injected staging promotion failure")
+                if replace_calls == 3:
+                    raise OSError("injected rollback failure")
+                return real_replace(source, destination)
+
+            with patch.object(
+                download_registry_mods.os, "replace", side_effect=fail_promotion_and_rollback
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "previous output could not be restored"
+                ) as raised:
+                    download_registry_mods._promote_directory(staging, output)
+
+            backups = list(root.glob(".mods.backup-*"))
+            self.assertEqual(len(backups), 1)
+            self.assertIn(str(backups[0]), str(raised.exception))
+            self.assertEqual(
+                (backups[0] / "old.txt").read_text(encoding="utf-8"),
+                "previous registry set",
+            )
+            self.assertFalse(output.exists())
+            self.assertTrue(staging.is_dir())
+            self.assertEqual(replace_calls, 3)
+
+    def test_registry_mod_promotion_refuses_non_directory_output(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            staging = root / "staging"
+            staging.mkdir()
+            output = root / "mods"
+            output.write_text("do not replace a file", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "must be a directory"):
+                download_registry_mods._promote_directory(staging, output)
+            self.assertEqual(output.read_text(encoding="utf-8"), "do not replace a file")
+            self.assertTrue(staging.is_dir())
+
+    def test_registry_mod_promotion_refuses_symlink_output(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            outside = root / "outside"
+            outside.mkdir()
+            sentinel = outside / "keep.txt"
+            sentinel.write_text("outside", encoding="utf-8")
+            staging = root / "staging"
+            staging.mkdir()
+            output = root / "mods"
+            try:
+                output.symlink_to(outside, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"directory symlinks are unavailable: {error}")
+            with self.assertRaisesRegex(ValueError, "symlink or reparse point"):
+                download_registry_mods._promote_directory(staging, output)
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "outside")
+            self.assertTrue(staging.is_dir())
+
 if __name__ == "__main__":
     unittest.main()
 
