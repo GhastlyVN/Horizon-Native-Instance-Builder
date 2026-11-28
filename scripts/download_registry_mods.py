@@ -330,7 +330,14 @@ def _metadata_is_link_or_reparse_point(metadata) -> bool:
 
 
 def _promote_directory(staging: pathlib.Path, output: pathlib.Path) -> None:
-    """Promote staged output and restore the previous directory if promotion fails."""
+    """Promote staged output with exception rollback, not crash-atomic publication.
+
+    When output already exists, it is first renamed to a unique backup and then
+    staging is renamed into place. A process crash or power loss between those
+    renames can leave output absent and the previous tree at .backup-*; this
+    exception handler cannot run after process termination. This helper does
+    not perform automatic orphan-backup recovery.
+    """
     backup = None
     try:
         metadata = output.lstat()
