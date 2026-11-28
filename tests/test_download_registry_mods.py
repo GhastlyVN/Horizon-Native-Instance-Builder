@@ -301,6 +301,47 @@ class RegistryModSelectionTests(unittest.TestCase):
                 [],
             )
 
+    def test_failed_registry_mod_promotion_reports_backup_when_rollback_fails(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            output = root / "mods"
+            output.mkdir()
+            (output / "old.txt").write_text("previous registry set", encoding="utf-8")
+            staging = root / "staging"
+            staging.mkdir()
+            (staging / "new.txt").write_text("new registry set", encoding="utf-8")
+
+            real_replace = download_registry_mods.os.replace
+            replace_calls = 0
+
+            def fail_promotion_and_rollback(source, destination):
+                nonlocal replace_calls
+                replace_calls += 1
+                if replace_calls == 2:
+                    raise OSError("injected staging promotion failure")
+                if replace_calls == 3:
+                    raise OSError("injected rollback failure")
+                return real_replace(source, destination)
+
+            with patch.object(
+                download_registry_mods.os, "replace", side_effect=fail_promotion_and_rollback
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "previous output could not be restored"
+                ) as raised:
+                    download_registry_mods._promote_directory(staging, output)
+
+            backups = list(root.glob(".mods.backup-*"))
+            self.assertEqual(len(backups), 1)
+            self.assertIn(str(backups[0]), str(raised.exception))
+            self.assertEqual(
+                (backups[0] / "old.txt").read_text(encoding="utf-8"),
+                "previous registry set",
+            )
+            self.assertFalse(output.exists())
+            self.assertTrue(staging.is_dir())
+            self.assertEqual(replace_calls, 3)
+
     def test_registry_mod_promotion_refuses_non_directory_output(self):
         with tempfile.TemporaryDirectory() as temp:
             root = pathlib.Path(temp)
