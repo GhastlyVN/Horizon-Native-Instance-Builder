@@ -6,11 +6,14 @@ import argparse
 import hashlib
 import io
 import json
+import os
 import pathlib
 import re
 import shutil
+import stat
 import tempfile
 import tomllib
+import uuid
 import urllib.parse
 import zipfile
 
@@ -318,6 +321,48 @@ def validate_bundle(data: bytes, expected: dict) -> None:
         raise ValueError(f"{mod_id}: invalid ZIP archive: {error}") from error
 
 
+
+def _metadata_is_link_or_reparse_point(metadata) -> bool:
+    reparse_attribute = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        getattr(metadata, "st_file_attributes", 0) & reparse_attribute
+    )
+
+
+def _promote_directory(staging: pathlib.Path, output: pathlib.Path) -> None:
+    """Atomically replace an output directory, restoring the previous tree on failure."""
+    backup = None
+    try:
+        metadata = output.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        if _metadata_is_link_or_reparse_point(metadata):
+            raise ValueError(f"Registry mod output must not be a symlink or reparse point: {output}")
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise ValueError(f"Registry mod output must be a directory: {output}")
+        backup = output.parent / f".{output.name}.backup-{uuid.uuid4().hex}"
+        os.replace(output, backup)
+
+    try:
+        os.replace(staging, output)
+    except BaseException:
+        if backup is not None:
+            try:
+                os.replace(backup, output)
+            except OSError as rollback_error:
+                raise RuntimeError(
+                    "Registry mod promotion failed and the previous output could not be restored; "
+                    f"it remains at {backup}"
+                ) from rollback_error
+        raise
+
+    if backup is not None:
+        # A cleanup failure may leave a private backup, but never removes the new output
+        # or sacrifices the previous output before the replacement is in place.
+        shutil.rmtree(backup, ignore_errors=True)
+
+
 def download_registry_mods(output: pathlib.Path, report_path: pathlib.Path,
                            ids: tuple[str, ...], game: str, horizon_commit: str,
                            index_url: str = INDEX_URL, health_url: str = HEALTH_URL,
@@ -347,9 +392,7 @@ def download_registry_mods(output: pathlib.Path, report_path: pathlib.Path,
             })
         if not downloaded:
             raise ValueError("No compatible registry native mods remain; refusing to publish a core-only build.")
-        if output.exists():
-            shutil.rmtree(output)
-        staging.rename(output)
+        _promote_directory(staging, output)
 
     result = {
         "schema": 1,
